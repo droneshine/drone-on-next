@@ -26,6 +26,7 @@ export interface Contact { depth: number; normal: THREE.Vector3; collider: Colli
 const CELL = 10;
 const _p = new THREE.Vector3();
 const _q = new THREE.Vector3();
+const _one = new THREE.Vector3(1, 1, 1);
 
 function sdfLocal(s: Shape, p: THREE.Vector3): number {
   switch (s.kind) {
@@ -47,8 +48,10 @@ function sdfLocal(s: Shape, p: THREE.Vector3): number {
 }
 
 export class ColliderWorld {
-  list: Collider[] = [];
+  list = new Set<Collider>();
   private grid = new Map<string, Collider[]>();
+  /** grid cells each collider sits in, so remove and move never scan the whole grid */
+  private cells = new Map<Collider, string[]>();
   private nextId = 1;
   heightAt: (x: number, z: number) => number = () => 0;
   waterLevel = -1e9;
@@ -59,44 +62,56 @@ export class ColliderWorld {
       : shape.kind === 'torus' ? shape.R + shape.r
       : shape.kind === 'cyl' ? Math.hypot(shape.radius, shape.halfH) : shape.radius;
     const c: Collider = { id: this.nextId++, shape, pos: pos.clone(), quat: quat.clone(), inv: m.invert(), bound, ...opts };
-    this.list.push(c);
+    this.list.add(c);
     this.insert(c);
     return c;
   }
 
   remove(c: Collider) {
-    this.list = this.list.filter(x => x !== c);
-    for (const [k, arr] of this.grid) {
-      const i = arr.indexOf(c);
-      if (i >= 0) { arr.splice(i, 1); if (!arr.length) this.grid.delete(k); }
-    }
+    this.list.delete(c);
+    this.unlink(c);
   }
 
-  /** Move a collider, e.g. a turning rotor blade. */
+  /** Move a collider, e.g. a turning rotor blade or a remote pilot. */
   move(c: Collider, pos: THREE.Vector3, quat: THREE.Quaternion) {
-    for (const [k, arr] of this.grid) {
-      const i = arr.indexOf(c);
-      if (i >= 0) { arr.splice(i, 1); if (!arr.length) this.grid.delete(k); }
-    }
+    this.unlink(c);
     c.pos.copy(pos); c.quat.copy(quat);
-    c.inv.compose(pos, quat, new THREE.Vector3(1, 1, 1)).invert();
+    c.inv.compose(pos, quat, _one).invert();
     this.insert(c);
   }
 
   removeWhere(fn: (c: Collider) => boolean) {
-    for (const c of this.list.filter(fn)) this.remove(c);
+    for (const c of [...this.list]) if (fn(c)) this.remove(c);
+  }
+
+  private unlink(c: Collider) {
+    const keys = this.cells.get(c);
+    if (!keys) return;
+    for (const k of keys) {
+      const arr = this.grid.get(k);
+      if (!arr) continue;
+      const i = arr.indexOf(c);
+      if (i >= 0) { arr.splice(i, 1); if (!arr.length) this.grid.delete(k); }
+    }
+    this.cells.delete(c);
   }
 
   private insert(c: Collider) {
-    const r = c.bound + 2.5;
+    // never index anything non finite or absurdly large: a hostile map must not hang the loop
+    if (!isFinite(c.pos.x) || !isFinite(c.pos.z) || !isFinite(c.bound)) return;
+    const r = Math.min(c.bound + 2.5, 400);
     const x0 = Math.floor((c.pos.x - r) / CELL), x1 = Math.floor((c.pos.x + r) / CELL);
     const z0 = Math.floor((c.pos.z - r) / CELL), z1 = Math.floor((c.pos.z + r) / CELL);
+    if (x1 - x0 > 100 || z1 - z0 > 100) return;
+    const keys: string[] = [];
     for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) {
       const k = x + ',' + z;
       let arr = this.grid.get(k);
       if (!arr) this.grid.set(k, arr = []);
       arr.push(c);
+      keys.push(k);
     }
+    this.cells.set(c, keys);
   }
 
   sdf(c: Collider, p: THREE.Vector3) {

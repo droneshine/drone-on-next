@@ -28,6 +28,29 @@ const DEFAULTS: InputSettings = {
   keyboardRate: 4,
 };
 
+function loadSettings(): InputSettings {
+  let s: Partial<InputSettings> = {};
+  try { const v = JSON.parse(localStorage.getItem(LS) || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) s = v; } catch { /* storage blocked or corrupt */ }
+  const map = s.rcMap && typeof s.rcMap === 'object' ? s.rcMap : {} as Partial<AxisMap>;
+  const axis = (v: unknown, d: number) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 16 ? v : d);
+  const inv = (map.invert && typeof map.invert === 'object' ? map.invert : {}) as Partial<AxisMap['invert']>;
+  const calib = s.rcCalib && Array.isArray(s.rcCalib.min) && Array.isArray(s.rcCalib.max) && Array.isArray(s.rcCalib.center) ? s.rcCalib : null;
+  const num = (v: unknown, d: number, lo: number, hi: number) => (typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
+  return {
+    rcMap: {
+      throttle: axis(map.throttle, 2), yaw: axis(map.yaw, 3), pitch: axis(map.pitch, 1), roll: axis(map.roll, 0),
+      invert: { throttle: !!inv.throttle, yaw: !!inv.yaw, pitch: inv.pitch ?? true, roll: !!inv.roll },
+    },
+    rcCalib: calib,
+    deadband: num(s.deadband, DEFAULTS.deadband, 0, 0.3),
+    expo: num(s.expo, DEFAULTS.expo, 0, 1),
+    mode: s.mode === 1 ? 1 : 2,
+    keyboardRate: num(s.keyboardRate, DEFAULTS.keyboardRate, 1, 20),
+  };
+}
+
+const FLIGHT_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+
 export class Input {
   settings: InputSettings;
   device: Device = 'keyboard';
@@ -39,38 +62,55 @@ export class Input {
   private kb = { yaw: 0, pitch: 0, roll: 0, climb: 0 };
   gamepadName = '';
   private padButtonsPrev: boolean[] = [];
+  /** resting value of every axis when the pad was first seen: a throttle parked at the bottom is not "movement" */
+  private padRest: number[] | null = null;
+  private padPrev: number[] = [];
   padPressed = new Set<number>();
   touch = { left: { x: 0, y: 0, active: false }, right: { x: 0, y: 0, active: false } };
   mouseDX = 0; mouseDY = 0; wheel = 0;
+  private wheelAcc = 0;
   mouseButtons = new Set<number>();
   enabled = true;
   touchSpray = false;
   touchTag = false;
-  uiClick = -1;      // canvas click for build mode, 0 left, 1 right
+  /** build mode on touch: up and down buttons */
+  touchBuildLift = 0;
+  undoPressed = false;
+  uiClick = -1;      // canvas click for build mode, 0 left, 1 middle
 
   constructor() {
-    let s: Partial<InputSettings> = {};
-    try { s = JSON.parse(localStorage.getItem(LS) || '{}'); } catch { /* storage blocked */ }
-    this.settings = { ...DEFAULTS, ...s, rcMap: { ...DEFAULTS.rcMap, ...(s.rcMap ?? {}), invert: { ...DEFAULTS.rcMap.invert, ...(s.rcMap?.invert ?? {}) } } };
+    this.settings = loadSettings();
     addEventListener('keydown', e => {
-      if ((e.target as HTMLElement)?.closest?.('input,textarea,select')) return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest?.('input,textarea,select,[contenteditable]')) return;
+      if (!this.enabled) return;
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') { e.preventDefault(); this.undoPressed = true; return; }
+      if (e.ctrlKey || e.metaKey || e.altKey && e.code !== 'AltLeft' && e.code !== 'AltRight') return;
       if (!this.keys.has(e.code)) this.pressed.add(e.code);
       this.keys.add(e.code);
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
-      if (this.device !== 'keyboard' && !this.touch.left.active && !this.touch.right.active && ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) this.device = 'keyboard';
+      // only swallow keys aimed at the game, so Tab, Space and Enter still work on menu buttons
+      const onGame = !t || t === document.body || t.id === 'gl' || t === document.documentElement;
+      if (onGame && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+      if (this.device !== 'keyboard' && !this.touch.left.active && !this.touch.right.active && FLIGHT_KEYS.includes(e.code)) this.device = 'keyboard';
     });
     addEventListener('keyup', e => this.keys.delete(e.code));
     addEventListener('blur', () => this.keys.clear());
     addEventListener('mousemove', e => { this.mouseDX += e.movementX; this.mouseDY += e.movementY; });
     addEventListener('mousedown', e => this.mouseButtons.add(e.button));
     addEventListener('mouseup', e => this.mouseButtons.delete(e.button));
-    addEventListener('wheel', e => { this.wheel += Math.sign(e.deltaY); }, { passive: true });
-    addEventListener('gamepadconnected', e => { this.gamepadName = (e as GamepadEvent).gamepad.id; this.device = this.looksLikeRC((e as GamepadEvent).gamepad) ? 'rc' : 'gamepad'; });
+    addEventListener('wheel', e => {
+      // trackpads send many tiny deltas: one notch is about 100 pixels
+      this.wheelAcc += e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 300 : 1);
+      const steps = Math.trunc(this.wheelAcc / 100);
+      if (steps) { this.wheel += steps; this.wheelAcc -= steps * 100; }
+    }, { passive: true });
+    addEventListener('gamepadconnected', e => { this.gamepadName = (e as GamepadEvent).gamepad.id; this.padRest = null; });
+    addEventListener('gamepaddisconnected', () => { this.padRest = null; if (this.device === 'rc' || this.device === 'gamepad') this.device = matchMedia('(pointer: coarse)').matches ? 'touch' : 'keyboard'; });
   }
 
   save() { try { localStorage.setItem(LS, JSON.stringify(this.settings)); } catch { /* ignore */ } }
 
-  private looksLikeRC(g: Gamepad) {
+  looksLikeRC(g: Gamepad) {
     const id = g.id.toLowerCase();
     return /siyi|unirc|radiomaster|frsky|taranis|jumper|edgetx|opentx|tx16|boxer|zorro|pocket|tbs|tango|betafpv|literadio|spektrum|dji.*fpv|flysky|ghost|crossfire|joystick.*rc|elrs/.test(id)
       || (g.buttons.length < 10 && g.axes.length >= 4 && !/xbox|playstation|dualsense|dualshock|wireless controller|8bitdo|switch/.test(id));
@@ -89,6 +129,13 @@ export class Input {
     return Math.sign(v) * (n * (1 - expo) + n * n * n * expo);
   }
 
+  /** where the throttle rests: centre (hover) in GPS mode, bottom otherwise unless already flying */
+  setThrottleRest(springs: boolean, armed = false) {
+    if (!this.touch.left.active) this.touch.left.y = springs ? 0 : armed ? 0 : -1;
+    if (!springs) this.kbThrottle = armed ? 0.5 : 0;
+    this.kb.climb = 0;
+  }
+
   /** Call once per frame. */
   update(dt: number) {
     this.padPressed.clear();
@@ -98,12 +145,22 @@ export class Input {
         if (b.pressed && !this.padButtonsPrev[i]) this.padPressed.add(i);
         this.padButtonsPrev[i] = b.pressed;
       });
-      const moved = pad.axes.some(a => Math.abs(a) > 0.3) || pad.buttons.some(b => b.pressed);
-      if (moved && this.device === 'keyboard') this.device = this.looksLikeRC(pad) ? 'rc' : 'gamepad';
-      if (moved && this.device === 'touch') this.device = this.looksLikeRC(pad) ? 'rc' : 'gamepad';
+      if (!this.padRest || this.padRest.length !== pad.axes.length) { this.padRest = [...pad.axes]; this.padPrev = [...pad.axes]; }
+      // a controller only takes over when a stick really moves or a button is pressed
+      const rest = this.padRest, prev = this.padPrev;
+      const moved = this.padPressed.size > 0 || pad.axes.some((a, i) => Math.abs(a - rest[i]) > 0.3 && Math.abs(a - prev[i]) > 0.02);
+      this.padPrev = [...pad.axes];
+      const screenSticks = this.touch.left.active || this.touch.right.active;
+      if (moved && !screenSticks && (this.device === 'keyboard' || this.device === 'touch')) this.device = this.looksLikeRC(pad) ? 'rc' : 'gamepad';
       this.gamepadName = pad.id;
     }
-    if (!this.enabled) return;
+    if (!this.enabled) {
+      // chat or a text field has the keys: let go of every stick so nothing keeps flying on its own
+      this.kb.yaw = this.kb.pitch = this.kb.roll = this.kb.climb = 0;
+      this.sticks.yaw = this.sticks.pitch = this.sticks.roll = 0;
+      if (this.throttleSprings) this.sticks.throttle = 0.5;
+      return;
+    }
     const s = this.settings;
     if (this.device === 'rc' && pad) {
       const m = s.rcMap, c = s.rcCalib;
@@ -171,7 +228,7 @@ export class Input {
   setKeyboardThrottle(v: number) { this.kbThrottle = v; }
 
   /** end of frame: clear edge state */
-  endFrame() { this.pressed.clear(); this.mouseDX = 0; this.mouseDY = 0; this.wheel = 0; }
+  endFrame() { this.pressed.clear(); this.mouseDX = 0; this.mouseDY = 0; this.wheel = 0; this.undoPressed = false; }
 
   hit(code: string) { return this.pressed.has(code); }
   padHit(i: number) { return this.padPressed.has(i); }

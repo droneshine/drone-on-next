@@ -13,8 +13,10 @@ export class Audio {
   muted = false;
 
   /** must be called from a user gesture */
+  private hidden = false;
+
   start() {
-    if (this.ctx) { this.ctx.resume(); return; }
+    if (this.ctx) { if (!this.hidden) this.ctx.resume(); return; }
     const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AC) return;
     const ctx = this.ctx = new AC();
@@ -48,6 +50,12 @@ export class Audio {
     filt.connect(gain).connect(this.master);
     osc.start(); osc2.start();
     this.motor = { osc, osc2, gain, filt };
+    // a hidden tab stops the frame loop, so nothing would ever turn the motors down: suspend instead
+    document.addEventListener('visibilitychange', () => {
+      this.hidden = document.hidden;
+      if (!this.ctx) return;
+      if (document.hidden) this.ctx.suspend(); else this.ctx.resume();
+    });
   }
 
   setVolume(v: number) { this.volume = v; if (this.master) this.master.gain.value = this.muted ? 0 : v; }

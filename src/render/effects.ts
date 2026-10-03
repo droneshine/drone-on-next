@@ -52,10 +52,18 @@ export class Particles {
     this.col[i * 4] = r; this.col[i * 4 + 1] = g; this.col[i * 4 + 2] = b; this.col[i * 4 + 3] = a;
   }
 
+  private alive = 0;
+
   update(dt: number, wind: THREE.Vector3, cameraFovScale: number) {
     (this.points.material as THREE.ShaderMaterial).uniforms.uScale.value = cameraFovScale;
+    // nothing in the air: skip the 200 KB upload and the draw
+    if (this.alive === 0 && this.next === this.lastNext) { this.points.visible = false; return; }
+    this.points.visible = true;
+    this.lastNext = this.next;
+    let alive = 0;
     for (let i = 0; i < this.max; i++) {
       if (this.life[i] <= 0) { this.size[i] = 0; continue; }
+      alive++;
       this.life[i] -= dt;
       const k = i * 3;
       const drag = this.col[i * 4 + 3] < 0.3 ? 2.5 : 0.6;   // mist drifts more than droplets
@@ -69,12 +77,15 @@ export class Particles {
       if (f < 0.25) this.size[i] *= 1 + dt * 1.5;
       this.col[i * 4 + 3] *= f < 0.3 ? 1 - dt * 3 : 1;
     }
+    this.alive = alive;
     this.geo.attributes.position.needsUpdate = true;
     this.geo.attributes.aSize.needsUpdate = true;
     this.geo.attributes.aCol.needsUpdate = true;
   }
 
-  clear() { this.life.fill(0); }
+  private lastNext = -1;
+
+  clear() { this.life.fill(0); this.size.fill(0); this.alive = 0; this.lastNext = -1; this.geo.attributes.aSize.needsUpdate = true; }
 }
 
 export class Hose {

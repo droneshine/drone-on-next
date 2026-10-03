@@ -163,7 +163,8 @@ export function buildFreestyle(cw: ColliderWorld) {
     [cx + 22, 16, cz - 40, 300], [cx + 40, 8, cz - 25, 320], [cx + 55, 4, cz - 8, 350], [cx + 72, 3, cz - 2, 0],
   ];
   path.forEach(([x, y, z, yaw], i) => {
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, THREE.MathUtils.degToRad(yaw), 0));
+    // ring planes face along the course: the path yaw is clockwise, three.js yaw counter clockwise
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, THREE.MathUtils.degToRad(-yaw), 0));
     const m = new THREE.Mesh(ringGeo, ringMat.clone());
     m.position.set(x, y + heightAt(x, z), z); m.quaternion.copy(q);
     m.castShadow = true;
@@ -327,13 +328,13 @@ export function buildForest(cw: ColliderWorld, count = 1700) {
     colorize(new THREE.ConeGeometry(2.4, 4.5, 8).translate(0, 4.2, 0), '#21452a'),
     colorize(new THREE.ConeGeometry(1.9, 3.8, 8).translate(0, 6.2, 0), '#264f2f'),
     colorize(new THREE.ConeGeometry(1.3, 3.2, 8).translate(0, 8.1, 0), '#2c5a34'),
-  ].map(x => x.toNonIndexed()))!;
+  ].map(x => (x.index ? x.toNonIndexed() : x)))!;
   const leafy = mergeGeometries([
     trunk(),
     colorize(new THREE.IcosahedronGeometry(2.6, 1).translate(0, 5.2, 0), '#3d6b2c'),
     colorize(new THREE.IcosahedronGeometry(1.9, 1).translate(1.2, 6.3, 0.6), '#4a7a33'),
     colorize(new THREE.IcosahedronGeometry(1.7, 1).translate(-1.1, 6.0, -0.7), '#36612a'),
-  ].map(x => x.toNonIndexed()))!;
+  ].map(x => (x.index ? x.toNonIndexed() : x)))!;
   conifer.computeVertexNormals(); leafy.computeVertexNormals();
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true });
   const uTime = { value: 0 };

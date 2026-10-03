@@ -90,15 +90,19 @@ export class World {
   }
 
   setTime(t: TimeOfDay) {
-    const presets: Record<TimeOfDay, { el: number; az: number; turb: number; ray: number; mie: number; sun: string; si: number; hemi: number; fog: string; fogD: number; cover: number; exp: number }> = {
-      day: { el: 52, az: 160, turb: 4, ray: 1.2, mie: 0.003, sun: '#fff4e4', si: 2.6, hemi: 0.55, fog: '#a9bccb', fogD: 0.0007, cover: 0.45, exp: 0.5 },
-      golden: { el: 16, az: 235, turb: 6, ray: 2.0, mie: 0.005, sun: '#ffcf96', si: 2.5, hemi: 0.45, fog: '#b4aa96', fogD: 0.00055, cover: 0.42, exp: 0.48 },
-      overcast: { el: 40, az: 180, turb: 18, ray: 0.6, mie: 0.02, sun: '#e9eef2', si: 0.9, hemi: 1.0, fog: '#9fa8ae', fogD: 0.0018, cover: 0.85, exp: 0.55 },
-      dusk: { el: 3, az: 250, turb: 8, ray: 3.0, mie: 0.008, sun: '#ff9a5a', si: 1.4, hemi: 0.3, fog: '#6f6370', fogD: 0.0011, cover: 0.38, exp: 0.7 },
+    // env: sky reflection strength; grass: tint so the blades sit in the same light as the ground
+    const presets: Record<TimeOfDay, { el: number; az: number; turb: number; ray: number; mie: number; sun: string; si: number; hemi: number; fog: string; fogD: number; cover: number; exp: number; env: number; grass: string }> = {
+      day: { el: 52, az: 160, turb: 2.6, ray: 1.0, mie: 0.002, sun: '#fff4e4', si: 2.7, hemi: 0.42, fog: '#9fb4c4', fogD: 0.00045, cover: 0.4, exp: 0.44, env: 0.5, grass: '#ffffff' },
+      golden: { el: 16, az: 235, turb: 6, ray: 2.0, mie: 0.005, sun: '#ffcf96', si: 2.5, hemi: 0.45, fog: '#b4aa96', fogD: 0.00055, cover: 0.42, exp: 0.48, env: 0.5, grass: '#fff0d8' },
+      overcast: { el: 40, az: 180, turb: 10, ray: 0.5, mie: 0.012, sun: '#eef0ee', si: 1.7, hemi: 0.45, fog: '#8f9699', fogD: 0.0011, cover: 0.85, exp: 0.46, env: 0.22, grass: '#d8dcd2' },
+      dusk: { el: 4, az: 250, turb: 8, ray: 3.0, mie: 0.008, sun: '#ffa063', si: 2.2, hemi: 0.8, fog: '#6f6370', fogD: 0.0009, cover: 0.38, exp: 1.05, env: 0.45, grass: '#b89a8a' },
     };
     const p = presets[t];
     const u = this.sky.material.uniforms;
     u.turbidity.value = p.turb; u.rayleigh.value = p.ray; u.mieCoefficient.value = p.mie; u.mieDirectionalG.value = 0.85;
+    // the stock sun disc is about 60000 in HDR, close to the half float limit: with bloom on top it
+    // overflows to Infinity and the frame turns black. A dimmer disc still reads as the sun.
+    u.showSunDisc.value = 0.05;
     const phi = THREE.MathUtils.degToRad(90 - p.el), theta = THREE.MathUtils.degToRad(p.az);
     this.sunDir.setFromSphericalCoords(1, phi, theta);
     u.sunPosition.value.copy(this.sunDir);
@@ -116,14 +120,16 @@ export class World {
     tmp.add(skyCopy);
     this.envRT?.dispose();
     this.envRT = this.pmrem.fromScene(tmp, 0.02);
+    skyCopy.geometry.dispose(); skyCopy.material.dispose();
     this.scene.environment = this.envRT.texture;
-    this.scene.environmentIntensity = t === 'dusk' ? 0.3 : 0.5;
-    if (this.grass) this.grass.uniforms.uSun.value.copy(this.sunDir);
+    this.scene.environmentIntensity = p.env;
+    if (this.grass) { this.grass.uniforms.uSun.value.copy(this.sunDir); this.grass.uniforms.uTint.value.set(p.grass); }
   }
 
   setWind(speed: number, dirDeg: number, gust: number) {
     const a = THREE.MathUtils.degToRad(dirDeg);
-    this.windBase.set(Math.sin(a) * speed, 0, Math.cos(a) * speed);
+    // dirDeg is where the wind comes FROM (0 north, 90 east). North is -z, east is +x.
+    this.windBase.set(-Math.sin(a) * speed, 0, Math.cos(a) * speed);
     this.gustiness = gust;
   }
 

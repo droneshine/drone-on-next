@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { World } from '../world/world';
 import type { DroneSim } from '../sim/drone';
+import type { Collider } from '../world/colliders';
 
 // Training missions. Each one teaches one real skill, scored in stars. The
 // three DroneShine missions are the actual jobs: clean a park, clean a facade,
@@ -40,6 +41,8 @@ export interface Mission {
   result(ctx: MissionCtx): MissionResult;
   failReason?: string;
   hud?(ctx: MissionCtx): string;
+  /** remove anything the mission added to the world */
+  cleanup?(world: World): void;
 }
 
 /** ring pass detection: crossing the ring plane inside the radius */
@@ -140,20 +143,21 @@ function solarShift(): Mission {
   let phase = 0;
   return {
     id: 'solar-shift', title: 'Solar Shift', skill: 'Contactless cleaning', drone: 'dsolar', lockDrone: true,
-    brief: 'The real DSolar job. 30 litres of demineralised water, three soiled rows. Hold Space or A to spray. Two to three metres above the glass cleans best, any lower and the downwash turns into a hazard.',
+    brief: 'The real DSolar job. 30 litres of demineralised water, three soiled rows. Hold Space or A to spray. Three to four metres above the glass gives the widest clean lane, any lower and the spray footprint shrinks.',
     wind: { speed: 2.5, dir: 60, gust: 0.25 },
-    spawn: (w) => ({ pos: w.pads[0].clone(), yaw: Math.PI }),
+    spawn: (w) => ({ pos: w.pads[0].clone(), yaw: 0 }),
     start(ctx) {
-      litres = 30; clean = 0; phase = 0; objs.forEach(o => o.done = false);
+      litres = ctx.sim.payload; clean = 0; phase = 0; objs.forEach(o => o.done = false);
       ctx.world.solar.soil(1, 11);
-      ctx.sim.payload = litres;
       const r = ctx.world.solar.rows[10];
       ctx.marker(new THREE.Vector3((r.x0 + r.x1) / 2, 6, r.z), 'J K L');
     },
     update(ctx, dt) {
       const s = ctx.sim;
       if (s.crashed) { this.failReason = 'DSolar went down. In a real park that is a six figure repair.'; return 'fail'; }
-      if (ctx.spraying && litres > 0) { litres = Math.max(0, litres - 5 / 60 * dt); s.payload = litres; }
+      // one tank: the game drains it while the sprayer runs, the mission only reads it
+      litres = s.payload;
+      void dt;
       if (phase === 0) {
         const r = ctx.world.solar.rows[10];
         if (Math.abs(s.pos.z - r.z) < 18 && s.pos.x > r.x0 - 5 && s.pos.x < r.x1 + 5) { phase = 1; objs[0].done = true; ctx.marker(null); ctx.chime(1); }
@@ -161,7 +165,7 @@ function solarShift(): Mission {
       clean = ctx.world.solar.cleanliness(rows);
       if (phase === 1 && clean >= 0.8) { phase = 2; objs[1].done = true; ctx.chime(4); ctx.marker(ctx.world.pads[0].clone().setY(2), 'Base'); }
       if (phase === 2 && s.onGround && s.pos.distanceTo(ctx.world.pads[0]) < 5 && s.speed() < 0.3) { objs[2].done = true; return 'success'; }
-      if (litres <= 0 && clean < 0.8 && !ctx.spraying) { this.failReason = 'Tank empty before 80 percent. Overlap less, fly a steady lane.'; return 'fail'; }
+      if (litres <= 0.01 && clean < 0.8) { this.failReason = 'Tank empty before 80 percent. Overlap less, fly a steady lane.'; return 'fail'; }
       if (s.soc <= 0.02) { this.failReason = 'Battery empty. Watch the voltage, plan the return.'; return 'fail'; }
       return 'running';
     },
@@ -187,10 +191,11 @@ function facadePro(): Mission {
     spawn: (w) => ({ pos: w.facade.pumpAnchor.clone().add(new THREE.Vector3(6, -2.2, 0)), yaw: -Math.PI / 2 }),
     start(ctx) {
       clean = 0; timer = 0; touches = 0; objs[0].done = false; objs[1].done = true;
+      ctx.world.facade.resetGrime();
       const f = ctx.world.facade;
       ctx.marker(f.zoneCenter(), 'Work zone');
       ctx.sim.impactListeners = [(sp, surf) => {
-        if (surf === 'hard' && sp > 0.6 && ctx.time - lastTouch > 1) { touches++; lastTouch = ctx.time; ctx.toast(`Touch ${touches} of 3`); }
+        if (surf === 'hard' && sp > 0.6 && ctx.time - lastTouch > 1) { touches++; lastTouch = ctx.time; if (touches <= 3) ctx.toast(`Touch ${touches} of 3`); }
       }];
     },
     update(ctx, dt) {
@@ -204,7 +209,7 @@ function facadePro(): Mission {
     },
     objectives: () => objs,
     hud: () => `Clean ${(clean * 100).toFixed(0)} %   Touches ${touches}/3`,
-    result(ctx) { const t = ctx.time; return { stars: Math.max(1, starsBy(t, 240, 360, 1e9, true)), score: fmt(t), detail: `${touches} touches, ${(clean * 100).toFixed(0)} % clean`, time: t }; },
+    result(ctx) { const t = ctx.time; return { stars: Math.max(1, starsBy(t, 120, 200, 1e9, true)), score: fmt(t), detail: `${touches} touches, ${(clean * 100).toFixed(0)} % clean`, time: t }; },
   };
 }
 
@@ -212,11 +217,11 @@ function facadePro(): Mission {
 function hotspotHunt(): Mission {
   let found = 0;
   const need = 6;
-  const objs: Objective[] = [{ text: 'Switch to thermal with H', done: false }, { text: `Tag ${need} hotspots: aim the crosshair and press F or X`, done: false }];
+  const objs: Objective[] = [{ text: 'Switch to thermal with H', done: false }, { text: `Tag ${need} hotspots: aim the crosshair and press F (X on a gamepad)`, done: false }];
   return {
     id: 'hotspot-hunt', title: 'Hotspot Hunt', skill: 'Thermal inspection', drone: 'dscan', lockDrone: true,
     brief: 'Half of all module faults show up as hotspots. Fly the DScan over the park, switch to the thermal camera and tag what glows. Twenty to forty metres altitude gives the best overview.',
-    spawn: (w) => ({ pos: w.pads[2].clone(), yaw: Math.PI }),
+    spawn: (w) => ({ pos: w.pads[2].clone(), yaw: 0 }),
     start(ctx) { found = 0; objs.forEach(o => o.done = false); ctx.world.solar.hotspots.forEach(h => h.found = false); ctx.marker(new THREE.Vector3(0, 25, -170), 'Park'); },
     update(ctx) {
       if (ctx.sim.crashed) { this.failReason = 'DScan crashed.'; return 'fail'; }
@@ -227,7 +232,7 @@ function hotspotHunt(): Mission {
           const h = ctx.world.solar.hotspots.find(h => !h.found && h.world.distanceTo(hit.p) < 1.4);
           if (h && ctx.world.thermal) { h.found = true; found++; ctx.chime(found); ctx.toast(`Hotspot ${found} of ${need} tagged`); }
           else ctx.toast(ctx.world.thermal ? 'Nothing hot there' : 'Switch to thermal first (H)');
-        }
+        } else ctx.toast(ctx.world.thermal ? 'Aim the crosshair at a solar module' : 'Switch to thermal first (H)');
       }
       if (found >= need) { objs[1].done = true; return 'success'; }
       if (ctx.time > 420) { this.failReason = 'Out of time.'; return 'fail'; }
@@ -247,7 +252,7 @@ function gustLanding(): Mission {
   return {
     id: 'gust-landing', title: 'Gust Front', skill: 'Wind correction', drone: 'dscan',
     brief: 'Nine metres per second with gusts from the west. Get onto the office roof and stay there. Watch the windsock before you go.',
-    wind: { speed: 9, dir: 90, gust: 0.7 },
+    wind: { speed: 9, dir: 270, gust: 0.7 },
     spawn: (w) => ({ pos: w.pads[2].clone(), yaw: -Math.PI / 2 }),
     start(ctx) { t2 = 0; objs[0].done = false; ctx.marker(target.clone().setY(26), 'Roof'); },
     update(ctx, dt) {
@@ -269,6 +274,7 @@ function lineOfSight(): Mission {
     new THREE.Vector3(-22, 4, -16), new THREE.Vector3(22, 6, -26), new THREE.Vector3(30, 4, 10), new THREE.Vector3(-26, 5, 6),
   ].map((p, i) => ({ pos: p, quat: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), i * Math.PI / 2 + Math.PI / 4), R: 2.6 }));
   const meshes: THREE.Mesh[] = [];
+  const cols: Collider[] = [];
   const objs: Objective[] = [{ text: 'Pass all four rings around the base', done: false }, { text: 'Land on any pad', done: false }];
   let step = 0;
   return {
@@ -278,11 +284,12 @@ function lineOfSight(): Mission {
     start(ctx) {
       step = 0; objs.forEach(o => o.done = false);
       tr = new RingTracker(gates);
-      for (const m of meshes) ctx.world.scene.remove(m);
-      meshes.length = 0;
+      this.cleanup!(ctx.world);
       for (const g of gates) {
         const m = new THREE.Mesh(new THREE.TorusGeometry(2.6, 0.15, 10, 48), new THREE.MeshStandardMaterial({ color: '#b5f78a', emissive: '#b5f78a', emissiveIntensity: 0.7 }));
         m.position.copy(g.pos); m.quaternion.copy(g.quat); ctx.world.scene.add(m); meshes.push(m);
+        // solid like the Ring Run rings
+        cols.push(ctx.world.colliders.add({ kind: 'torus', R: 2.6, r: 0.15 }, g.pos.clone(), g.quat.clone(), { tag: 'losring' }));
       }
       ctx.marker(gates[0].pos, '1');
     },
@@ -298,25 +305,35 @@ function lineOfSight(): Mission {
       return 'running';
     },
     objectives: () => objs,
-    result(ctx) { for (const m of meshes) ctx.world.scene.remove(m); const t = ctx.time; return { stars: Math.max(1, starsBy(t, 60, 100, 1e9, true)), score: fmt(t), detail: 'Line of sight, the way the exam does it', time: t }; },
+    cleanup(world) {
+      for (const m of meshes) { world.scene.remove(m); m.geometry.dispose(); (m.material as THREE.Material).dispose(); }
+      meshes.length = 0;
+      for (const c of cols) world.colliders.remove(c);
+      cols.length = 0;
+    },
+    result(ctx) { const t = ctx.time; return { stars: Math.max(1, starsBy(t, 60, 100, 1e9, true)), score: fmt(t), detail: 'Line of sight, the way the exam does it', time: t }; },
   };
 }
 
 // ------------------------------------------------------------------ 8
 function turbineRun(): Mission {
   let reached = false;
-  const objs: Objective[] = [{ text: 'Inspect the wind turbine nacelle from within 15 m', done: false }, { text: 'Return home with more than 20 % battery', done: false }];
+  let inspect = 0;
+  const objs: Objective[] = [{ text: 'Hover within 15 m of the nacelle for 10 s', done: false }, { text: 'Return home with more than 20 % battery', done: false }];
   const nacelle = new THREE.Vector3(-330, 96, -279);
   return {
     id: 'turbine', title: 'Turbine Run', skill: 'Battery planning', drone: 'dscan',
-    brief: 'The turbine is half a kilometre away and the blades are turning. Get close to the nacelle, then come home before the pack runs low. Distance is easy, discipline is not.',
+    brief: 'The turbine is half a kilometre away and the blades are turning. Hold a 10 second inspection next to the nacelle without touching the rotor, then come home before the pack runs low.',
     wind: { speed: 5, dir: 45, gust: 0.4 },
-    spawn: (w) => ({ pos: w.pads[0].clone(), yaw: Math.PI * 0.8 }),
-    start(ctx) { reached = false; objs.forEach(o => o.done = false); ctx.marker(nacelle, 'Nacelle'); },
-    update(ctx) {
+    spawn: (w) => ({ pos: w.pads[0].clone(), yaw: 0.85 }),
+    start(ctx) { reached = false; inspect = 0; objs.forEach(o => o.done = false); ctx.marker(nacelle, 'Nacelle'); },
+    update(ctx, dt) {
       const s = ctx.sim;
-      if (s.crashed) { this.failReason = s.pos.distanceTo(nacelle) < 60 ? 'Blade strike. Keep clear of the rotor disc.' : 'Crashed.'; return 'fail'; }
-      if (!reached && s.pos.distanceTo(nacelle) < 15) { reached = true; objs[0].done = true; ctx.chime(3); ctx.marker(ctx.world.pads[0].clone().setY(3), 'Home'); }
+      if (s.crashed) { this.failReason = s.crashReason === 'Blade strike' ? 'Blade strike. Keep clear of the rotor disc.' : 'Crashed.'; return 'fail'; }
+      if (!reached) {
+        if (s.pos.distanceTo(nacelle) < 15) inspect += dt; else inspect = Math.max(0, inspect - dt);
+        if (inspect >= 10) { reached = true; objs[0].done = true; ctx.chime(3); ctx.marker(ctx.world.pads[0].clone().setY(3), 'Home'); }
+      }
       if (reached && s.onGround && Math.hypot(s.pos.x, s.pos.z) < 30) {
         if (s.soc > 0.2) { objs[1].done = true; return 'success'; }
         this.failReason = 'Home, but below 20 percent. In real ops that is a write up.'; return 'fail';
@@ -325,7 +342,8 @@ function turbineRun(): Mission {
       return 'running';
     },
     objectives: () => objs,
-    result(ctx) { const t = ctx.time; const soc = ctx.sim.soc; return { stars: starsBy(soc, 0.5, 0.35, 0.2), score: `${(soc * 100).toFixed(0)} % left`, detail: `${fmt(t)} flight, ${ctx.sim.energyWh.toFixed(0)} Wh used`, time: t }; },
+    hud: () => (reached ? 'Inspection done, head home' : `Inspection ${inspect.toFixed(1)} / 10 s`),
+    result(ctx) { const t = ctx.time; const soc = ctx.sim.soc; return { stars: Math.max(1, starsBy(soc, 0.8, 0.7, 0.2)), score: `${(soc * 100).toFixed(0)} % left`, detail: `${fmt(t)} flight, ${ctx.sim.energyWh.toFixed(0)} Wh used`, time: t }; },
   };
 }
 

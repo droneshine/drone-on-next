@@ -136,19 +136,35 @@ export function motorLayout(spec: DroneSpec): { x: number; z: number; y: number;
   return out;
 }
 
+/** True when untrusted JSON looks like a DRONE ON drone file at all. */
+export function looksLikeDrone(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const r = raw as Record<string, unknown>;
+  return typeof r.name === 'string' && typeof r.mass === 'number' && isFinite(r.mass) && typeof r.maxThrust === 'number' && isFinite(r.maxThrust);
+}
+
+const RESERVED_IDS = () => new Set(FEATURED.map(f => f.id));
+
 export function validateSpec(raw: unknown): DroneSpec {
   const base = featured('shine5');
-  const r = (raw ?? {}) as Partial<DroneSpec>;
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<DroneSpec>;
   const num = (v: unknown, d: number, lo: number, hi: number) =>
     typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d;
   const str = (v: unknown, d: string, max = 80) => typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : d;
   const layout: Layout = (['quadX', 'hexX', 'octoX', 'coaxX8'] as const).includes(r.layout as Layout) ? r.layout as Layout : 'quadX';
   const mode: FlightMode = (['acro', 'angle', 'gps'] as const).includes(r.defaultMode as FlightMode) ? r.defaultMode as FlightMode : 'angle';
   const tool: Tool = (['none', 'sprayDown', 'lance', 'thermal', 'camera'] as const).includes(r.tool as Tool) ? r.tool as Tool : 'camera';
-  const mass = num(r.mass, 2, 0.05, 200);
+  // tiny whoops are real drones too: 15 g and 2 cm arms are allowed
+  const mass = num(r.mass, 2, 0.015, 200);
   const n = motorCount(layout);
+  const tank = tool === 'sprayDown' ? num(r.tank, 10, 0.5, 100) : undefined;
+  const flow = tool === 'sprayDown' || tool === 'lance' ? num(r.flow, 4, 0.1, 30) : undefined;
+  // never allow a drone that cannot hover with a full tank and a sagging pack
+  const minThrust = (mass + (tank ?? 0)) * 9.81 * 1.45 / n;
+  let id = str(r.id, 'custom-' + Math.random().toString(36).slice(2, 8), 40).replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
+  if (RESERVED_IDS().has(id)) id = id + '-custom';
   return {
-    id: str(r.id, 'custom-' + Math.random().toString(36).slice(2, 8), 40).replace(/[^a-z0-9_-]/gi, '-').toLowerCase(),
+    id,
     name: str(r.name, 'Custom drone', 32),
     author: str(r.author, 'Community', 40),
     tagline: str(r.tagline, 'A community drone.', 140),
@@ -156,13 +172,12 @@ export function validateSpec(raw: unknown): DroneSpec {
     color: /^#[0-9a-f]{6}$/i.test(String(r.color)) ? String(r.color) : '#26c257',
     accent: /^#[0-9a-f]{6}$/i.test(String(r.accent)) ? String(r.accent) : '#111111',
     layout,
-    armLength: num(r.armLength, 0.3, 0.04, 2),
-    propDiameter: num(r.propDiameter, 0.25, 0.03, 2),
+    armLength: num(r.armLength, 0.3, 0.02, 2),
+    propDiameter: num(r.propDiameter, 0.25, 0.02, 2),
     mass,
-    // never allow a drone that cannot hover
-    maxThrust: Math.max(num(r.maxThrust, mass * 9.81 * 2.2 / n, 0.1, 2000), mass * 9.81 * 1.25 / n),
+    maxThrust: Math.max(num(r.maxThrust, mass * 9.81 * 2.2 / n, 0.05, 2000), minThrust),
     motorTau: num(r.motorTau, 0.05, 0.01, 0.4),
-    dragArea: num(r.dragArea, 0.05, 0.002, 2),
+    dragArea: num(r.dragArea, 0.05, 0.001, 2),
     battery: { cells: Math.round(num(r.battery?.cells, 6, 1, 24)), capacityAh: num(r.battery?.capacityAh, 1.5, 0.1, 100) },
     defaultMode: mode,
     maxTilt: num(r.maxTilt, 35, 10, 80),
@@ -176,11 +191,13 @@ export function validateSpec(raw: unknown): DroneSpec {
     },
     camUptilt: num(r.camUptilt, 10, -60, 60),
     tool,
-    tank: r.tank != null ? num(r.tank, 10, 0.5, 100) : undefined,
-    flow: r.flow != null ? num(r.flow, 4, 0.1, 30) : undefined,
-    hose: !!r.hose,
-    glb: typeof r.glb === 'string' && (r.glb.startsWith('data:') || r.glb.startsWith('https://')) ? r.glb : undefined,
-    glbScale: num(r.glbScale, 1, 0.001, 1000),
+    tank,
+    flow,
+    // a ground hose only makes sense for a lance drone
+    hose: tool === 'lance' && !!r.hose,
+    // only embedded models: a remote URL would make every player fetch a stranger's file
+    glb: typeof r.glb === 'string' && r.glb.startsWith('data:') ? r.glb : undefined,
+    glbScale: num(r.glbScale, 1, 0.05, 20),
     glbYaw: num(r.glbYaw, 0, -360, 360),
     glbOffsetY: num(r.glbOffsetY, 0, -5, 5),
   };

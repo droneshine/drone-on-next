@@ -9,7 +9,7 @@ import { COL } from '../world/props';
 
 export type PieceType = 'ring' | 'bigring' | 'gate' | 'cube' | 'platform' | 'ramp' | 'pillar' | 'wall' | 'container' | 'panels' | 'tree' | 'flag';
 
-export interface Piece { t: PieceType; x: number; y: number; z: number; r: number; s: number; }
+export interface Piece { t: PieceType; x: number; y: number; z: number; r: number; s: number; id?: string; }
 export interface MapData { v: 1; name: string; author: string; pieces: Piece[]; race: boolean; }
 
 export const PIECES: { t: PieceType; label: string; key: string }[] = [
@@ -92,6 +92,10 @@ export function buildPiece(p: Piece): Built {
       add(new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1), mat('flagc', () => new THREE.MeshStandardMaterial({ color: COL.accent, side: THREE.DoubleSide, emissive: COL.accent, emissiveIntensity: 0.2 }))), null, new THREE.Vector3(0.8, 4.4, 0));
       const pad = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 0.08, 32), mat('startpad', () => new THREE.MeshStandardMaterial({ color: '#2a2e2b', roughness: 0.8 })));
       add(pad, { kind: 'box', half: sc(new THREE.Vector3(1.6, 0.04, 1.6)) }, new THREE.Vector3(3.4, 0.04, 0));
+      // arrow on the pad: the drone starts facing this way
+      const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.1, 3), mat('startarrow', () => new THREE.MeshBasicMaterial({ color: COL.light })));
+      add(arrow, null, new THREE.Vector3(3.4, 0.14, -0.6), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2));
+      arrow.castShadow = false;
       break;
     }
   }
@@ -99,116 +103,245 @@ export function buildPiece(p: Piece): Built {
   return { obj: g, shapes, checkpoint };
 }
 
+const TYPES = new Set<PieceType>(PIECES.map(p => p.t));
+const WORLD_HALF = 740;
+const num = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+/** Validate one piece from any untrusted source (share link, file, peer). Null when unusable. */
+export function sanitizePiece(raw: unknown): Piece | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (!TYPES.has(r.t as PieceType)) return null;
+  const x = num(r.x), y = num(r.y), z = num(r.z), rot = num(r.r ?? 0), sc = num(r.s ?? 1);
+  if (![x, y, z, rot, sc].every(Number.isFinite)) return null;
+  if (Math.abs(x) > WORLD_HALF || Math.abs(z) > WORLD_HALF || y < -20 || y > 400) return null;
+  return {
+    t: r.t as PieceType, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, z: Math.round(z * 100) / 100,
+    r: ((Math.round(rot) % 360) + 360) % 360, s: Math.min(4, Math.max(0.4, sc)),
+    id: typeof r.id === 'string' && /^[a-z0-9]{1,16}$/i.test(r.id) ? r.id : uid(),
+  };
+}
+
+/** Validate a whole map. Bad pieces are dropped; null when the data is not a map at all. */
+export function sanitizeMap(raw: unknown): MapData | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.pieces)) return null;
+  const pieces: Piece[] = [];
+  const seen = new Set<string>();
+  for (const p of r.pieces.slice(0, 2000)) {
+    const sp = sanitizePiece(p);
+    if (!sp) continue;
+    if (seen.has(sp.id!)) sp.id = uid();
+    seen.add(sp.id!);
+    pieces.push(sp);
+  }
+  const str = (v: unknown, d: string) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, 40) : d);
+  return { v: 1, name: str(r.name, 'Untitled course'), author: str(r.author, 'Pilot'), race: r.race !== false, pieces };
+}
+
+type UndoOp = { kind: 'placed'; id: string } | { kind: 'removed'; piece: Piece; index: number } | { kind: 'snapshot'; map: MapData };
+export type BuildOp = { op: 'place'; p: Piece; index?: number } | { op: 'remove'; id: string } | { op: 'clear' } | { op: 'map'; map: MapData } | { op: 'race'; on: boolean };
+
+function disposeObject(o: THREE.Object3D) {
+  o.traverse(c => {
+    const m = c as THREE.Mesh;
+    if (m.isMesh) m.geometry?.dispose();
+  });
+}
+
 export class Builder {
   map: MapData = { v: 1, name: 'My Spielwiese', author: 'Pilot', pieces: [], race: true };
-  private built: { obj: THREE.Object3D; cols: Collider[]; checkpoint?: Built['checkpoint'] }[] = [];
+  /** where the loaded map came from: only your own course is ever saved over your own slot */
+  origin: 'own' | 'shared' | 'room' = 'own';
+  private built = new Map<string, { obj: THREE.Object3D; cols: Collider[]; checkpoint?: Built['checkpoint'] }>();
   ghost: THREE.Object3D | null = null;
+  private hover: THREE.BoxHelper | null = null;
+  private hoverId: string | null = null;
   selected: PieceType = 'ring';
   yaw = 0; lift = 0; scale = 1;
   active = false;
-  undo: MapData['pieces'][] = [];
+  private undo: UndoOp[] = [];
   /** fired for user edits only, multiplayer mirrors them */
-  onOp: ((op: { op: string; [k: string]: unknown }) => void) | null = null;
+  onOp: ((op: BuildOp) => void) | null = null;
+  /** fired after any change, local or remote */
+  onChanged: (() => void) | null = null;
 
   constructor(private world: World) {}
 
-  clear(emit = false) {
-    if (emit) this.onOp?.({ op: 'clear' });
-    for (const b of this.built) { this.world.buildGroup.remove(b.obj); for (const c of b.cols) this.world.colliders.remove(c); }
-    this.built = [];
-    this.map.pieces = [];
+  private drop(id: string) {
+    const b = this.built.get(id);
+    if (!b) return;
+    this.world.buildGroup.remove(b.obj);
+    disposeObject(b.obj);
+    for (const c of b.cols) this.world.colliders.remove(c);
+    this.built.delete(id);
+    if (this.hoverId === id) this.setHover(null);
   }
 
-  load(m: MapData, emit = false) {
-    if (emit) this.onOp?.({ op: 'map', map: m });
-    this.clear();
-    this.map = { ...m, pieces: [] };
-    for (const p of m.pieces.slice(0, 2000)) this.place(p, false);
-  }
-
-  place(p: Piece, record = true) {
-    if (record) this.onOp?.({ op: 'place', p });
-    if (record) this.undo.push(this.map.pieces.slice());
+  private add(p: Piece, index?: number) {
     const b = buildPiece(p);
-    this.world.buildGroup.add(b.obj);
-    const idx = this.map.pieces.length;
-    const cols = b.shapes.map(s => this.world.colliders.add(s.shape, s.pos, s.quat, { tag: 'build', data: idx }));
-    this.built.push({ obj: b.obj, cols, checkpoint: b.checkpoint });
-    this.map.pieces.push(p);
-    // thermal pass of a later toggle should treat build pieces as ambient
     b.obj.userData.temp = 0.45;
+    this.world.buildGroup.add(b.obj);
+    const cols = b.shapes.map(s => this.world.colliders.add(s.shape, s.pos, s.quat, { tag: 'build', data: p.id }));
+    this.built.set(p.id!, { obj: b.obj, cols, checkpoint: b.checkpoint });
+    if (index == null || index >= this.map.pieces.length) this.map.pieces.push(p);
+    else this.map.pieces.splice(Math.max(0, index), 0, p);
   }
 
-  removeAt(i: number) {
-    this.onOp?.({ op: 'remove', i });
-    if (i < 0 || i >= this.map.pieces.length) return;
-    this.undo.push(this.map.pieces.slice());
-    const pieces = this.map.pieces.filter((_, k) => k !== i);
-    const meta = { ...this.map };
-    this.clear();
-    this.map = { ...meta, pieces: [] };
-    for (const p of pieces) this.place(p, false);
+  /** Remove everything. With record, Ctrl+Z brings the course back. */
+  clear(emit = false, record = false) {
+    if (record && this.map.pieces.length) this.undo.push({ kind: 'snapshot', map: { ...this.map, pieces: this.map.pieces.slice() } });
+    else if (!record) this.undo = [];
+    if (emit) this.onOp?.({ op: 'clear' });
+    for (const id of [...this.built.keys()]) this.drop(id);
+    this.map.pieces = [];
+    this.onChanged?.();
+  }
+
+  /** Load a map. Returns false and keeps the current map when the data is invalid. */
+  load(raw: unknown, opts: { emit?: boolean; origin?: Builder['origin'] } = {}): boolean {
+    const m = sanitizeMap(raw);
+    if (!m) return false;
+    if (opts.emit) this.onOp?.({ op: 'map', map: m });
+    for (const id of [...this.built.keys()]) this.drop(id);
+    this.map = { ...m, pieces: [] };
+    for (const p of m.pieces) this.add(p);
+    if (opts.origin) this.origin = opts.origin;
+    this.undo = [];
+    this.onChanged?.();
+    return true;
+  }
+
+  /** Place a piece. User edits record undo and broadcast; remote edits do neither. */
+  place(raw: Piece, opts: { record?: boolean; emit?: boolean; index?: number } = {}): Piece | null {
+    const p = sanitizePiece(raw);
+    if (!p || this.map.pieces.length >= 2000) return null;
+    if (this.built.has(p.id!)) p.id = uid();
+    this.add(p, opts.index);
+    if (opts.record !== false) this.undo.push({ kind: 'placed', id: p.id! });
+    if (opts.emit !== false) this.onOp?.({ op: 'place', p, index: opts.index });
+    this.onChanged?.();
+    return p;
+  }
+
+  removeId(id: string, opts: { record?: boolean; emit?: boolean } = {}) {
+    const index = this.map.pieces.findIndex(p => p.id === id);
+    if (index < 0) return;
+    const piece = this.map.pieces[index];
+    this.drop(id);
+    this.map.pieces.splice(index, 1);
+    if (opts.record !== false) this.undo.push({ kind: 'removed', piece, index });
+    if (opts.emit !== false) this.onOp?.({ op: 'remove', id });
+    this.onChanged?.();
   }
 
   undoLast() {
-    const prev = this.undo.pop();
-    if (!prev) return;
-    const meta = { ...this.map };
-    this.clear();
-    this.map = { ...meta, pieces: [] };
-    for (const p of prev) this.place(p, false);
-    this.onOp?.({ op: 'map', map: this.map });
+    const op = this.undo.pop();
+    if (!op) return;
+    if (op.kind === 'placed') this.removeId(op.id, { record: false });
+    else if (op.kind === 'removed') this.place(op.piece, { record: false, index: op.index });
+    else this.load(op.map, { emit: true });
   }
 
-  checkpoints() { return this.built.map(b => b.checkpoint).filter(Boolean) as NonNullable<Built['checkpoint']>[]; }
+  /** Apply an edit that came from another pilot. */
+  applyRemote(op: BuildOp) {
+    if (!op || typeof op !== 'object') return;
+    if (op.op === 'place') this.place(op.p, { record: false, emit: false, index: typeof op.index === 'number' ? op.index : undefined });
+    else if (op.op === 'remove' && typeof op.id === 'string') this.removeId(op.id, { record: false, emit: false });
+    else if (op.op === 'clear') this.clear(false);
+    else if (op.op === 'map') this.load(op.map, { origin: 'room' });
+    else if (op.op === 'race') { this.map.race = !!op.on; this.onChanged?.(); }
+  }
+
+  checkpoints() {
+    const out: NonNullable<Built['checkpoint']>[] = [];
+    for (const p of this.map.pieces) { const c = this.built.get(p.id!)?.checkpoint; if (c) out.push(c); }
+    return out;
+  }
+
+  /** identifies the course layout, so best laps never mix between different courses */
+  signature() {
+    let h = 2166136261;
+    const cps = this.checkpoints();
+    for (const c of cps) for (const v of [c.pos.x, c.pos.y, c.pos.z]) { h ^= Math.round(v * 2); h = Math.imul(h, 16777619); }
+    return (h >>> 0).toString(36) + '-' + cps.length;
+  }
 
   startPad(): { pos: THREE.Vector3; yaw: number } | null {
-    const i = this.map.pieces.findIndex(p => p.t === 'flag');
-    if (i < 0) return null;
-    const p = this.map.pieces[i];
-    const off = new THREE.Vector3(3.4 * (p.s || 1), 0.1, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(p.r));
-    return { pos: new THREE.Vector3(p.x, p.y, p.z).add(off), yaw: THREE.MathUtils.degToRad(p.r) + Math.PI };
+    const p = this.map.pieces.find(q => q.t === 'flag');
+    if (!p) return null;
+    const off = new THREE.Vector3(3.4 * (p.s || 1), 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(p.r));
+    const pos = new THREE.Vector3(p.x, p.y, p.z).add(off);
+    // the pad may sit on a slope: never spawn inside the hill
+    pos.y = Math.max(pos.y + 0.1, this.world.colliders.heightAt(pos.x, pos.z) + 0.1);
+    // the drone faces the way the start arrow points
+    return { pos, yaw: THREE.MathUtils.degToRad(p.r) };
   }
 
   setGhost(type: PieceType) {
     this.selected = type;
-    if (this.ghost) this.world.scene.remove(this.ghost);
+    this.hideGhost();
     const b = buildPiece({ t: type, x: 0, y: 0, z: 0, r: 0, s: this.scale });
+    const ghostMat = new THREE.MeshBasicMaterial({ color: COL.light, transparent: true, opacity: 0.35, depthWrite: false });
     b.obj.traverse(o => {
       const m = o as THREE.Mesh;
-      if (m.isMesh) { m.material = new THREE.MeshBasicMaterial({ color: COL.light, transparent: true, opacity: 0.35, depthWrite: false }); m.castShadow = false; }
+      if (m.isMesh) { m.material = ghostMat; m.castShadow = false; }
     });
     this.ghost = b.obj;
     this.ghost.userData.noThermal = true;
+    this.ghost.userData.ghostMat = ghostMat;
     this.world.scene.add(this.ghost);
   }
 
-  hideGhost() { if (this.ghost) { this.world.scene.remove(this.ghost); this.ghost = null; } }
+  hideGhost() {
+    this.setHover(null);
+    if (!this.ghost) return;
+    this.world.scene.remove(this.ghost);
+    disposeObject(this.ghost);
+    (this.ghost.userData.ghostMat as THREE.Material | undefined)?.dispose();
+    this.ghost = null;
+  }
 
-  /** Aim from the camera: returns snapped placement or the index of the piece under the cursor. */
-  aim(cam: THREE.Camera): { pos: THREE.Vector3; hitPiece: number } {
+  /** outline the piece the crosshair is on, so X deletes what you expect */
+  setHover(id: string | null) {
+    if (id === this.hoverId) { this.hover?.update(); return; }
+    if (this.hover) { this.world.scene.remove(this.hover); this.hover.geometry.dispose(); (this.hover.material as THREE.Material).dispose(); this.hover = null; }
+    this.hoverId = id;
+    const b = id ? this.built.get(id) : null;
+    if (!b) return;
+    this.hover = new THREE.BoxHelper(b.obj, 0xff6b5a);
+    this.hover.userData.noThermal = true;
+    this.world.scene.add(this.hover);
+  }
+
+  /** Aim from the camera: snapped placement position and the id of the piece under the crosshair. */
+  aim(cam: THREE.Camera): { pos: THREE.Vector3; hitId: string | null } {
     const o = cam.getWorldPosition(new THREE.Vector3());
     const d = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.getWorldQuaternion(new THREE.Quaternion()));
     const hit = this.world.colliders.raycast(o, d, 160);
     const t = isFinite(hit.t) ? hit.t : 40;
     const p = o.clone().addScaledVector(d, Math.min(t, 160));
     const snap = 0.5;
-    p.x = Math.round(p.x / snap) * snap; p.z = Math.round(p.z / snap) * snap;
+    p.x = THREE.MathUtils.clamp(Math.round(p.x / snap) * snap, -WORLD_HALF, WORLD_HALF);
+    p.z = THREE.MathUtils.clamp(Math.round(p.z / snap) * snap, -WORLD_HALF, WORLD_HALF);
     p.y = Math.max(this.world.colliders.heightAt(p.x, p.z), Math.round((p.y - 0.05) / snap) * snap) + this.lift;
-    const hitPiece = hit.c && hit.c.tag === 'build' ? (hit.c.data as number) : -1;
+    const hitId = hit.c && hit.c.tag === 'build' ? String(hit.c.data) : null;
     if (this.ghost) {
       this.ghost.position.copy(p);
       this.ghost.rotation.y = THREE.MathUtils.degToRad(this.yaw);
       this.ghost.scale.setScalar(this.scale);
     }
-    return { pos: p, hitPiece };
+    this.setHover(this.ghost ? hitId : null);
+    return { pos: p, hitId };
   }
 }
 
 /** A starter course so the Spielwiese is never empty. */
 export function starterMap(): MapData {
   const pieces: Piece[] = [
-    { t: 'flag', x: -150, y: 0, z: 34, r: 180, s: 1 },
+    { t: 'flag', x: -138, y: 0, z: 38, r: 180, s: 1 },
   ];
   const n = 10;
   for (let i = 0; i < n; i++) {
@@ -216,5 +349,5 @@ export function starterMap(): MapData {
     pieces.push({ t: i % 3 === 2 ? 'gate' : 'ring', x: -150 + Math.sin(a) * 34, y: 0, z: 70 - Math.cos(a) * 26, r: -THREE.MathUtils.radToDeg(a) + 90, s: 1 });
   }
   pieces.push({ t: 'ramp', x: -150, y: 0, z: 72, r: 0, s: 1 }, { t: 'container', x: -132, y: 0, z: 68, r: 30, s: 1 }, { t: 'pillar', x: -165, y: 0, z: 75, r: 0, s: 1 });
-  return { v: 1, name: 'Starter loop', author: 'DroneShine', pieces, race: true };
+  return sanitizeMap({ v: 1, name: 'Starter loop', author: 'DroneShine', pieces, race: true })!;
 }

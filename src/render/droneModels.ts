@@ -333,6 +333,57 @@ function wordmarkMesh(w: number, h: number) {
 
 const gltf = new GLTFLoader();
 
+// parsed uploads, keyed by the data URL: slider tweaks in the editor must not re-parse a 20 MB model
+const glbCache = new Map<string, Promise<THREE.Group>>();
+function glbKey(url: string) { return url.length + ':' + url.slice(0, 64) + url.slice(-64); }
+
+function dataUrlBytes(url: string): ArrayBuffer {
+  const b64 = url.slice(url.indexOf(',') + 1);
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
+}
+
+/** Parse a binary glTF from a data URL. Rejects anything that is not a real GLB. */
+export function parseGlb(url: string): Promise<THREE.Group> {
+  const key = glbKey(url);
+  let p = glbCache.get(key);
+  if (!p) {
+    p = (async () => {
+      if (!url.startsWith('data:')) throw new Error('Only embedded models are supported');
+      const buf = dataUrlBytes(url);
+      const head = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+      if (head.length < 4 || head[0] !== 0x67 || head[1] !== 0x6c || head[2] !== 0x54 || head[3] !== 0x46) throw new Error('Not a binary glTF (.glb) file');
+      const res = await gltf.parseAsync(buf, '');
+      let meshes = 0;
+      res.scene.traverse(o => { if ((o as THREE.Mesh).isMesh) meshes++; });
+      if (!meshes) throw new Error('The file contains no meshes');
+      return res.scene;
+    })();
+    glbCache.set(key, p);
+    p.catch(() => glbCache.delete(key));
+    while (glbCache.size > 4) glbCache.delete(glbCache.keys().next().value!);
+  }
+  return p;
+}
+
+/** Free GPU memory of a drone that left the scene. Shared, cached upload meshes are kept. */
+export function disposeVisual(v: DroneVisual | null | undefined) {
+  if (!v) return;
+  v.root.traverse(o => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || m.userData.sharedGlb) return;
+    m.geometry?.dispose();
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    for (const mat of mats) {
+      if (!mat) continue;
+      for (const val of Object.values(mat)) if (val && (val as THREE.Texture).isTexture) (val as THREE.Texture).dispose();
+      mat.dispose();
+    }
+  });
+}
+
 export async function buildDroneVisual(spec: DroneSpec): Promise<DroneVisual> {
   let v: DroneVisual;
   switch (spec.model) {
@@ -346,22 +397,28 @@ export async function buildDroneVisual(spec: DroneSpec): Promise<DroneVisual> {
   }
   if (spec.glb) {
     try {
-      const res = await gltf.loadAsync(spec.glb);
-      const model = res.scene;
-      // auto fit: scale so the model span matches the motor span unless a scale is given
-      const box = new THREE.Box3().setFromObject(model);
+      const source = await parseGlb(spec.glb);
+      const model = source.clone(true);
+      model.traverse(o => { if ((o as THREE.Mesh).isMesh) o.userData.sharedGlb = true; });
+      // auto fit to the motor span, the scale setting multiplies on top of that
+      const box = new THREE.Box3().setFromObject(source);
       const size = box.getSize(new THREE.Vector3());
       const span = Math.max(size.x, size.z) || 1;
-      const auto = (spec.armLength * 2 + spec.propDiameter) / span;
-      const s = spec.glbScale && spec.glbScale !== 1 ? spec.glbScale : auto;
+      const s = (spec.armLength * 2 + spec.propDiameter) / span * (spec.glbScale ?? 1);
       model.scale.setScalar(s);
       const c = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
-      model.position.set(-c.x, -c.y + (spec.glbOffsetY ?? 0), -c.z);
-      model.rotation.y = THREE.MathUtils.degToRad(spec.glbYaw ?? 0);
+      model.position.set(-c.x, -c.y, -c.z);
+      // rotate around the model centre, not around wherever its file origin happens to be
+      const pivot = new THREE.Group();
+      pivot.position.y = spec.glbOffsetY ?? 0;
+      pivot.rotation.y = THREE.MathUtils.degToRad(spec.glbYaw ?? 0);
+      pivot.add(model);
       // replace the procedural body, keep spinning props so it still reads as alive
       const keep = new Set(v.props.map(p => p.pivot));
-      for (const child of [...v.root.children]) if (!keep.has(child)) v.root.remove(child);
-      v.root.add(model);
+      const removed = new THREE.Group();
+      for (const child of [...v.root.children]) if (!keep.has(child)) { v.root.remove(child); removed.add(child); }
+      disposeVisual({ ...v, root: removed });
+      v.root.add(pivot);
     } catch (e) {
       console.warn('GLB failed, using procedural body', e);
     }

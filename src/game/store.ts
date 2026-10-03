@@ -55,9 +55,15 @@ export async function deleteCustomDrone(id: string) {
 }
 
 const mem = new Map<string, string>();
+/** Read a stored value. Anything of the wrong shape falls back, so a stale or corrupt entry can never lock a player out. */
 export function getLS<T>(key: string, fallback: T): T {
-  try { const v = localStorage.getItem('droneon.' + key); if (v != null) return JSON.parse(v); } catch { /* blocked */ }
-  const m = mem.get(key); return m ? JSON.parse(m) : fallback;
+  let v: unknown = undefined;
+  try { const s = localStorage.getItem('droneon.' + key); if (s != null) v = JSON.parse(s); } catch { v = undefined; }
+  if (v === undefined) { const m = mem.get(key); if (m) { try { v = JSON.parse(m); } catch { v = undefined; } } }
+  if (v === undefined || v === null) return fallback;
+  const shape = (x: unknown) => (Array.isArray(x) ? 'array' : x === null ? 'null' : typeof x);
+  if (fallback !== null && fallback !== undefined && shape(v) !== shape(fallback)) return fallback;
+  return v as T;
 }
 export function setLS(key: string, v: unknown) {
   const s = JSON.stringify(v);
@@ -66,7 +72,16 @@ export function setLS(key: string, v: unknown) {
 }
 
 export interface Progress { stars: Record<string, number>; best: Record<string, number>; flights: number; airtime: number; distance: number; }
-export function progress(): Progress { return getLS<Progress>('progress', { stars: {}, best: {}, flights: 0, airtime: 0, distance: 0 }); }
+export function progress(): Progress {
+  const p = getLS<Partial<Progress>>('progress', {});
+  const rec = (o: unknown) => {
+    const out: Record<string, number> = {};
+    if (o && typeof o === 'object' && !Array.isArray(o)) for (const [k, v] of Object.entries(o)) if (typeof v === 'number' && isFinite(v)) out[k] = v;
+    return out;
+  };
+  const n = (v: unknown) => (typeof v === 'number' && isFinite(v) ? v : 0);
+  return { stars: rec(p.stars), best: rec(p.best), flights: n(p.flights), airtime: n(p.airtime), distance: n(p.distance) };
+}
 export function saveProgress(p: Progress) { setLS('progress', p); }
 
 // ------------------------------------------------------------- share codes

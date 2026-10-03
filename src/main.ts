@@ -2,12 +2,43 @@ import './ui/style.css';
 import * as THREE from 'three';
 import { Game } from './game/game';
 import { UI, mapFromHash, lastDroneId } from './ui/ui';
-import { FEATURED, featured } from './sim/spec';
+import { FEATURED, featured, looksLikeDrone, validateSpec } from './sim/spec';
+import type { DroneSpec } from './sim/spec';
 import { listCustomDrones } from './game/store';
 import { audio } from './audio/audio';
+import { roomFromHash } from './ui/mpui';
 
 const bar = document.querySelector<HTMLElement>('.boot-bar i')!;
 const step = (p: number) => { bar.style.setProperty('--p', String(p)); };
+const bootEl = () => document.getElementById('boot')!;
+
+function fail(title: string, text: string, err?: unknown, offerReset = false) {
+  if (err) console.error(err);
+  bootEl().classList.remove('gone');
+  bootEl().innerHTML = `<div class="boot-fail"><h2>${title}</h2><p>${text}</p>${offerReset ? '<button class="btn go" type="button">Reset saved data and reload</button>' : ''}</div>`;
+  bootEl().querySelector('button')?.addEventListener('click', () => {
+    try { for (const k of Object.keys(localStorage)) if (k.startsWith('droneon.')) localStorage.removeItem(k); } catch { /* storage blocked */ }
+    try { indexedDB.deleteDatabase('droneon'); } catch { /* ignore */ }
+    location.hash = ''; location.reload();
+  });
+}
+
+/** the drone picked last time, wherever it came from: featured, your hangar or the community list */
+async function rememberedDrone(): Promise<DroneSpec> {
+  const id = lastDroneId();
+  const own = FEATURED.find(s => s.id === id);
+  if (own) return own;
+  try { const c = (await listCustomDrones()).find(s => s.id === id); if (c) return c; } catch { /* storage blocked */ }
+  try {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 2500);
+    const list = await fetch(import.meta.env.BASE_URL + 'community/index.json', { signal: ctl.signal }).then(r => r.ok ? r.json() : []);
+    clearTimeout(t);
+    const hit = (Array.isArray(list) ? list : []).filter(looksLikeDrone).map(validateSpec).find(s => s.id === id);
+    if (hit) return hit;
+  } catch { /* offline */ }
+  return featured('dscan');
+}
 
 async function boot() {
   if (location.hash.includes('debug')) (await import('./debug')).installDebug();
@@ -20,33 +51,35 @@ async function boot() {
   try {
     game = new Game(canvas);
   } catch (e) {
-    document.getElementById('boot')!.innerHTML = `<div style="max-width:420px;text-align:center;line-height:1.6;padding:24px"><h2 style="font-family:Nasalization,Audiowide,sans-serif;font-weight:400;font-size:28px;margin-bottom:10px">WebGL is not available</h2><p style="color:rgba(247,247,242,.7)">DRONE ON needs hardware accelerated graphics. Turn on hardware acceleration in your browser settings, or try Chrome, Edge, Firefox or Safari on a recent device.</p></div>`;
-    console.error(e);
+    fail('WebGL is not available', 'DRONE ON needs hardware accelerated graphics. Turn on hardware acceleration in your browser settings, or try Chrome, Edge, Firefox or Safari on a recent device.', e);
     return;
   }
-  step(0.7);
-  const id = lastDroneId();
-  const custom = await listCustomDrones();
-  const spec = [...FEATURED, ...custom].find(s => s.id === id) ?? featured('dscan');
-  await game.setDrone(spec);
-  step(0.9);
-  const ui = new UI(game);
-  (window as unknown as { droneon: unknown }).droneon = { game, ui };
-  // dev only: QA rigs in tools/ render with the same THREE instance
-  if (import.meta.env.DEV) (window as unknown as { THREE: unknown }).THREE = THREE;
-  game.start();
-  const shared = await mapFromHash();
-  const { roomFromHash } = await import('./ui/mpui');
-  if (roomFromHash()) setTimeout(() => ui.openSheet('squad'), 200);
-  await game.enterMenu();
-  if (shared) {
-    game.toast(`Shared course: ${shared.name}`);
-    const go = () => { audio.start(); removeEventListener('pointerdown', go); removeEventListener('keydown', go); };
-    addEventListener('pointerdown', go); addEventListener('keydown', go);
-    game.startFreeFlight(shared);
+  try {
+    step(0.5);
+    const spec = await rememberedDrone();
+    game.chosenSpec = spec;
+    await game.setDrone(spec);
+    step(0.75);
+    await game.warmup();
+    step(0.9);
+    const ui = new UI(game);
+    (window as unknown as { droneon: unknown }).droneon = { game, ui };
+    // dev only: QA rigs in tools/ render with the same THREE instance
+    if (import.meta.env.DEV) (window as unknown as { THREE: unknown }).THREE = THREE;
+    game.start();
+    const shared = await mapFromHash();
+    await game.enterMenu();
+    if (roomFromHash()) setTimeout(() => ui.openSheet('squad'), 200);
+    else if (shared) {
+      game.toast(`Shared course: ${String((shared as { name?: unknown }).name ?? 'Shared course').slice(0, 40)}`);
+      await game.startFreeFlight(shared);
+    } else if (/map=/.test(location.hash)) game.toast('That course link is damaged');
+  } catch (e) {
+    fail('Something went wrong while loading', 'Saved data on this device might be damaged. Resetting clears your own drones and courses on this device, then the game loads fresh.', e, true);
+    return;
   }
   step(1);
-  setTimeout(() => document.getElementById('boot')!.classList.add('gone'), 120);
+  setTimeout(() => bootEl().classList.add('gone'), 120);
   // audio needs a gesture
   const unlock = () => { audio.start(); removeEventListener('pointerdown', unlock); removeEventListener('keydown', unlock); };
   addEventListener('pointerdown', unlock); addEventListener('keydown', unlock);

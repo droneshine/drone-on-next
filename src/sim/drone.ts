@@ -13,6 +13,7 @@ const _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vecto
 const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 const _m = new THREE.Matrix4();
 const UP = new THREE.Vector3(0, 1, 0);
+const DOWN = new THREE.Vector3(0, -1, 0);
 
 export interface Motor { x: number; y: number; z: number; dir: number; s: number; thrust: number; }
 
@@ -33,13 +34,16 @@ export class DroneSim {
   extraForce = new THREE.Vector3(); // world frame, e.g. hose
   // battery
   soc = 1; voltage = 0; current = 0; powerW = 0; energyWh = 0;
+  private vFilt = 0;
   // controller state
   private iRate = new THREE.Vector3();
   private holdPos = new THREE.Vector3();
   private holdAlt = 0;
   private holding = false;
   private altHolding = false;
-  private yawHold = 0;
+  /** a stick must be seen low once before the motors may arm, like a real flight controller */
+  private armReady = false;
+  private lowThrottleT = 0;
   inertia = new THREE.Vector3();
   radius: number;
   contactPts: { p: THREE.Vector3; r: number; prop: boolean }[] = [];
@@ -48,8 +52,14 @@ export class DroneSim {
   // assists
   throttleCurveHover = true;
   sticks: Sticks = { throttle: 0, yaw: 0, pitch: 0, roll: 0 };
+  /** height of the landing gear above whatever surface is below: terrain, roof or platform */
   agl = 0;
+  private surfaceY = 0;
+  private surfaceAge = 1;
+  autoLanding = false;
   impactListeners: ((speed: number, surface: string) => void)[] = [];
+  /** contact with another pilot's drone: their id and our velocity along the contact normal */
+  bumpListeners: ((peerId: string, normal: THREE.Vector3, speed: number) => void)[] = [];
   private contact: Contact = { depth: 0, normal: new THREE.Vector3(), collider: null, surface: '' };
 
   constructor(spec: DroneSpec, private world: ColliderWorld) {
@@ -60,12 +70,19 @@ export class DroneSim {
     this.inertia.set(m * L * L * 0.25, m * L * L * 0.42, m * L * L * 0.25);
     this.radius = L + spec.propDiameter * 0.5;
     const pr = spec.propDiameter * 0.5;
-    for (const mo of this.motors) this.contactPts.push({ p: new THREE.Vector3(mo.x, mo.y + 0.02, mo.z), r: Math.max(0.02, pr * 0.85), prop: true });
     const legH = this.legHeight();
+    const footR = Math.min(0.02 + L * 0.03, legH * 0.5 + 0.01);
+    // feet: sphere bottoms sit exactly at the skid line, so the drone rests on its gear, not above it
     const legW = L * 0.45;
-    for (const [x, z] of [[legW, legW], [-legW, legW], [legW, -legW], [-legW, -legW]]) this.contactPts.push({ p: new THREE.Vector3(x, -legH, z), r: 0.02 + L * 0.03, prop: false });
-    this.contactPts.push({ p: new THREE.Vector3(0, 0, 0), r: L * 0.35, prop: false });
-    this.voltage = this.cellOcv(1) * spec.battery.cells;
+    for (const [x, z] of [[legW, legW], [-legW, legW], [legW, -legW], [-legW, -legW]]) this.contactPts.push({ p: new THREE.Vector3(x, -legH + footR, z), r: footR, prop: false });
+    // props: never reach below the feet, otherwise a parked drone stands on its rotors
+    for (const mo of this.motors) {
+      const py = mo.y + 0.02;
+      const r = Math.max(0.015, Math.min(pr * 0.85, py + legH - 0.01));
+      this.contactPts.push({ p: new THREE.Vector3(mo.x, py, mo.z), r, prop: true });
+    }
+    this.contactPts.push({ p: new THREE.Vector3(0, 0, 0), r: Math.min(L * 0.35, legH * 0.9 + 0.02), prop: false });
+    this.voltage = this.vFilt = this.cellOcv(1) * spec.battery.cells;
   }
 
   legHeight() {
@@ -77,16 +94,18 @@ export class DroneSim {
 
   reset(pos: THREE.Vector3, yaw: number) {
     this.pos.copy(pos);
-    this.pos.y += this.legHeight() + 0.03;
+    this.pos.y += this.legHeight() + 0.004;
     this.vel.set(0, 0, 0); this.w.set(0, 0, 0);
     this.quat.setFromAxisAngle(UP, yaw);
     for (const m of this.motors) { m.s = 0; m.thrust = 0; }
     this.iRate.set(0, 0, 0);
     this.crashed = false; this.crashReason = '';
     this.armed = false; this.holding = false; this.altHolding = false;
-    this.yawHold = yaw;
+    this.armReady = false; this.lowThrottleT = 0; this.autoLanding = false;
     this.soc = 1; this.energyWh = 0; this.maxImpact = 0;
+    this.voltage = this.vFilt = this.cellOcv(1) * this.spec.battery.cells;
     this.onGround = true;
+    this.surfaceAge = 1;
   }
 
   heading() {
@@ -102,10 +121,6 @@ export class DroneSim {
     return 3.3 + 0.55 * s + 0.35 * Math.pow(s, 6) - 0.35 * Math.pow(1 - s, 10);
   }
 
-  private hoverThrustFrac() {
-    return (this.totalMass * G) / (this.motors.length * this.spec.maxThrust);
-  }
-
   /** Main step, dt seconds. */
   step(dt: number, sticks: Sticks) {
     this.sticks = sticks;
@@ -113,21 +128,29 @@ export class DroneSim {
     const n = this.motors.length;
     const m = this.totalMass;
     const vFull = 4.2 * spec.battery.cells;
-    const sag = Math.max(0.2, (this.voltage / vFull));
+    const sag = Math.max(0.2, (this.vFilt / vFull));
     const tMaxEff = spec.maxThrust * sag * sag * (this.soc < 0.03 ? Math.max(0, this.soc / 0.03) : 1);
 
-    // arming: throttle up arms, crash disarms
-    if (!this.armed && !this.crashed) {
-      if (this.mode === 'gps' ? sticks.throttle > 0.7 : sticks.throttle > 0.08) {
-        this.armed = true; this.holding = false; this.altHolding = false; this.yawHold = this.heading();
+    // arming: needs a low stick first, then throttle up arms. Crash disarms.
+    const lowGate = this.mode === 'gps' ? 0.56 : 0.08;
+    if (sticks.throttle <= lowGate) this.armReady = true;
+    if (!this.armed && !this.crashed && this.armReady) {
+      if (this.mode === 'gps' ? sticks.throttle > 0.7 : sticks.throttle > 0.1) {
+        this.armed = true; this.holding = false; this.altHolding = false;
       }
     }
 
-    // ground effect, height of rotor plane over terrain
-    const groundH = this.world.heightAt(this.pos.x, this.pos.z);
-    this.agl = this.pos.y - groundH - this.legHeight();
+    // surface below: terrain, roofs and build pieces, refreshed at 20 Hz
+    this.surfaceAge += dt;
+    if (this.surfaceAge > 0.05) {
+      this.surfaceAge = 0;
+      const from = _v.copy(this.pos);
+      const hit = this.world.raycast(from, DOWN, 80, c => c.tag !== 'player' && c.tag !== 'tree');
+      this.surfaceY = isFinite(hit.t) ? this.pos.y - hit.t : this.world.heightAt(this.pos.x, this.pos.z);
+    }
+    this.agl = this.pos.y - this.surfaceY - this.legHeight();
     const R = spec.propDiameter / 2;
-    const zr = Math.max(this.pos.y - groundH, R * 0.6);
+    const zr = Math.max(this.pos.y - this.surfaceY, R * 0.6);
     const ge = Math.min(1.25, 1 / Math.max(0.8, 1 - (R / (4 * zr)) ** 2));
 
     // --- controller: produce desired collective (N) and body rate setpoint
@@ -142,11 +165,12 @@ export class DroneSim {
       const rate = 200 * rc.rcRate * expoed;
       return rate / (1 - Math.min(0.99, ax * rc.superRate));
     };
+    const kRate = 1 / (2.2 * spec.motorTau + 0.01);
 
     if (this.mode === 'acro') {
       const D2R = Math.PI / 180;
       wDes.set(-bfRate(sticks.pitch) * D2R, -bfRate(sticks.yaw) * D2R, -bfRate(sticks.roll) * D2R);
-      collective = this.throttleToThrust(sticks.throttle) * n * tMaxEff;
+      collective = this.throttleToThrust(sticks.throttle, tMaxEff) * n * tMaxEff;
     } else {
       const maxTilt = spec.maxTilt * Math.PI / 180;
       const yaw = this.heading();
@@ -156,8 +180,7 @@ export class DroneSim {
         const tp = sticks.pitch * maxTilt, tr = sticks.roll * maxTilt;
         const qd = new THREE.Quaternion().setFromEuler(new THREE.Euler(-tp, yaw, -tr, 'YXZ'));
         upDes.set(0, 1, 0).applyQuaternion(qd);
-        collective = this.throttleToThrust(sticks.throttle) * n * tMaxEff;
-        // keep altitude a little more stable when tilted, like real self level FCs do not: none
+        collective = this.throttleToThrust(sticks.throttle, tMaxEff) * n * tMaxEff;
       } else {
         // GPS: velocity control in heading frame with position and altitude hold
         const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
@@ -175,28 +198,40 @@ export class DroneSim {
         } else this.holding = false;
         const tIn = (sticks.throttle - 0.5) * 2;
         let vzDes = Math.abs(tIn) > 0.06 ? tIn * spec.maxClimb * (tIn < 0 ? 0.8 : 1) : 0;
-        if (Math.abs(tIn) <= 0.06 && this.armed) {
-          if (!this.altHolding) { this.altHolding = true; this.holdAlt = this.pos.y; }
+        if (Math.abs(tIn) <= 0.06 && this.armed && !this.autoLanding) {
+          // capture the height where the drone will actually stop, not where the stick was released
+          if (!this.altHolding) { this.altHolding = true; this.holdAlt = this.pos.y + this.vel.y * 0.35; }
           vzDes = (this.holdAlt - this.pos.y) * 1.5;
         } else this.altHolding = false;
-        // terrain safety, slow down descent close to ground
-        if (vzDes < 0 && this.agl < 2) vzDes = Math.max(vzDes, -0.6 - this.agl * 0.4);
+        // nearly empty battery: GPS drones land themselves, like real ones do
+        if (this.soc < 0.05 && this.armed) { this.autoLanding = true; vzDes = Math.min(vzDes, -1.2); }
+        // descent limited by what the motors can brake, then a slow final approach over any surface
+        if (vzDes < 0) {
+          const twEff = (n * tMaxEff) / (m * G);
+          const aBrake = Math.max(1, (twEff - 1) * G * 0.45);
+          const vSafe = Math.sqrt(2 * aBrake * Math.max(0, this.agl - 1.2)) + 0.5;
+          vzDes = Math.max(vzDes, -vSafe);
+          if (this.agl < 1.5) vzDes = Math.max(vzDes, -0.45 - this.agl * 0.35);
+        }
         // cascade: each outer loop must be slower than the one inside it
-        const kRate = 1 / (2.2 * spec.motorTau + 0.01);
         const kAtt = Math.min(6, kRate * 0.42);
         const kv = Math.min(1.6, kAtt * 0.34);
         const aDes = new THREE.Vector3((vDes.x - this.vel.x) * kv, (vzDes - this.vel.y) * 2.5, (vDes.z - this.vel.z) * kv);
-        const aH = Math.hypot(aDes.x, aDes.z), aHMax = Math.tan(maxTilt) * G;
-        if (aH > aHMax) { aDes.x *= aHMax / aH; aDes.z *= aHMax / aH; }
-        // wind feed forward is implicit through the integrator on velocity error
+        aDes.y = Math.max(aDes.y, -0.6 * G);
         const F = aDes.clone().add(new THREE.Vector3(0, G, 0)).multiplyScalar(m).sub(this.extraForce);
-        F.y = Math.max(F.y, m * G * 0.15);
+        F.y = Math.max(F.y, m * G * 0.3);
+        // tilt limit applied to the final thrust vector, so wind and climbs never exceed maxTilt
+        const fH = Math.hypot(F.x, F.z), fHMax = Math.tan(maxTilt) * F.y;
+        if (fH > fHMax) { F.x *= fHMax / fH; F.z *= fHMax / fH; }
         upDes = F.clone().normalize();
         const bodyUp = _v.set(0, 1, 0).applyQuaternion(this.quat);
         collective = Math.max(0, F.length() * Math.max(0.3, bodyUp.dot(upDes)));
         if (!this.armed) collective = 0;
-        // on the ground with throttle low, stay down and spool down
-        if (this.onGround && sticks.throttle < 0.55 && this.vel.y <= 0.05) { collective = 0; if (sticks.throttle < 0.1) this.armed = false; }
+        // on the ground with throttle low, stay down, spool down and disarm
+        if (this.onGround && (sticks.throttle < 0.55 || this.autoLanding) && this.vel.y <= 0.05) {
+          collective = 0;
+          if (sticks.throttle < 0.1 || this.autoLanding) this.armed = false;
+        }
       }
       // attitude: rotate current up to desired up, plus yaw rate
       const bodyUp = _v2.set(0, 1, 0).applyQuaternion(this.quat);
@@ -205,10 +240,16 @@ export class DroneSim {
       const ang = Math.atan2(sinA, bodyUp.dot(upDes));
       if (sinA > 1e-6) axis.multiplyScalar(ang / sinA); else axis.set(0, 0, 0);
       axis.applyQuaternion(qInv); // body frame
-      const ka = Math.min(this.mode === 'gps' ? 6 : 8, (1 / (2.2 * spec.motorTau + 0.01)) * 0.42);
+      const ka = Math.min(this.mode === 'gps' ? 6 : 8, kRate * 0.42);
       wDes.set(axis.x * ka, 0, axis.z * ka);
       wDes.y = -sticks.yaw * spec.maxYawRate * Math.PI / 180;
     }
+
+    // angle and acro: throttle at zero on the ground for a moment disarms
+    if (this.mode !== 'gps' && this.armed && this.onGround && sticks.throttle < 0.05) {
+      this.lowThrottleT += dt;
+      if (this.lowThrottleT > 0.8) this.armed = false;
+    } else this.lowThrottleT = 0;
 
     if (!this.armed || this.crashed) {
       collective = 0; wDes.set(0, 0, 0); this.iRate.set(0, 0, 0);
@@ -216,15 +257,14 @@ export class DroneSim {
 
     // --- rate controller PI -> torque
     const tau = spec.motorTau;
-    const kp = 1 / (2.2 * tau + 0.01);
     const err = wDes.clone().sub(this.w);
-    if (this.armed && !this.onGround) this.iRate.addScaledVector(err, dt * 4);
-    this.iRate.clampLength(0, 3);
-    const alpha = err.multiplyScalar(kp).addScaledVector(this.iRate, kp * 0.5);
+    const alpha = err.clone().multiplyScalar(kRate).addScaledVector(this.iRate, kRate * 0.5);
+    // yaw on big props is slow by nature: a gentler loop avoids saturating the motors
+    alpha.y = err.y * kRate * 0.6 + this.iRate.y * kRate * 0.3;
     const I = this.inertia;
     const torque = new THREE.Vector3(alpha.x * I.x, alpha.y * I.y, alpha.z * I.z);
 
-    // --- mixer with airmode style desaturation
+    // --- mixer. Priority: roll and pitch, then collective (altitude), then yaw.
     const kq = 0.06 * spec.propDiameter;
     let sx = 0, sz = 0;
     for (const mo of this.motors) { sx += mo.x * mo.x; sz += mo.z * mo.z; }
@@ -235,30 +275,36 @@ export class DroneSim {
       yw.push(-mo.dir * torque.y / (kq * n));
     }
     const lo = 0, hi = tMaxEff;
-    const span = (a: number[]) => Math.max(...a) - Math.min(...a);
-    let s1 = span(rp); if (s1 > hi - lo) { const k = (hi - lo) / s1; for (let i = 0; i < n; i++) rp[i] *= k; }
-    const comb = rp.map((v, i) => v + yw[i]);
-    let s2 = span(comb);
-    if (s2 > hi - lo) {
-      const room = (hi - lo) - span(rp);
-      const sy = span(yw) || 1;
-      const k = Math.max(0, room / sy);
-      for (let i = 0; i < n; i++) comb[i] = rp[i] + yw[i] * Math.min(1, k);
-    }
-    const mn = Math.min(...comb), mx = Math.max(...comb);
+    let saturated = false;
+    const rpMax = Math.max(...rp), rpMin = Math.min(...rp);
+    if (rpMax - rpMin > hi - lo) { const k = (hi - lo) / (rpMax - rpMin); for (let i = 0; i < n; i++) rp[i] *= k; saturated = true; }
+    const active = this.armed && !this.crashed && (collective > 0 || this.mode === 'acro');
     let base = T0;
-    if (this.armed && !this.crashed && (collective > 0 || this.mode === 'acro')) {
-      base = Math.min(Math.max(T0, lo - mn + (this.mode === 'acro' ? tMaxEff * 0.03 : 0)), hi - mx);
+    if (active) {
+      const idle = this.mode === 'acro' ? tMaxEff * 0.03 : 0;
+      base = Math.min(Math.max(T0, lo + idle - Math.min(...rp)), hi - Math.max(...rp));
     }
+    // yaw only gets the headroom left around the collective
+    let kYaw = 1;
+    for (let i = 0; i < n; i++) {
+      const v = base + rp[i];
+      if (yw[i] > 0) kYaw = Math.min(kYaw, (hi - v) / yw[i]);
+      else if (yw[i] < 0) kYaw = Math.min(kYaw, (lo - v) / yw[i]);
+    }
+    kYaw = Math.max(0, Math.min(1, kYaw));
+    if (kYaw < 1) saturated = true;
+    // integrate only while the motors can still follow, so nothing winds up and overshoots
+    if (this.armed && !this.onGround && !saturated) this.iRate.addScaledVector(err, dt * 4);
+    this.iRate.clampLength(0, 2);
 
     // --- motor dynamics, thrust ~ s^2
     let fz = 0; const bodyTorque = new THREE.Vector3();
     let powerW = 0;
     const A = Math.PI * R * R;
-    const eta = 0.35 + 0.25 * Math.min(1, spec.propDiameter / 0.8);
+    const eta = 0.35 + 0.3 * Math.min(1, spec.propDiameter / 1.0);
     for (let i = 0; i < n; i++) {
       const mo = this.motors[i];
-      const target = (this.armed && !this.crashed && (collective > 0 || this.mode === 'acro')) ? Math.min(hi, Math.max(lo, base + comb[i])) : 0;
+      const target = active ? Math.min(hi, Math.max(lo, base + rp[i] + yw[i] * kYaw)) : 0;
       const sCmd = Math.sqrt(target / Math.max(1e-6, tMaxEff));
       mo.s += (sCmd - mo.s) * Math.min(1, dt / tau);
       const T = tMaxEff * mo.s * mo.s * ge;
@@ -272,16 +318,18 @@ export class DroneSim {
     // coaxial losses
     if (spec.layout === 'coaxX8') powerW *= 1.18;
 
-    // battery
+    // battery: internal resistance scales with pack size, voltage smoothed like a real pack responds
     const cells = spec.battery.cells;
     const ocv = this.cellOcv(this.soc) * cells;
-    const rInt = 0.004 * cells / spec.battery.capacityAh * 4;
+    const rInt = 0.0032 * cells / Math.pow(Math.max(0.3, spec.battery.capacityAh), 0.85);
     const avionics = 6 + spec.mass * 0.4;
     const P = powerW + avionics;
-    // solve V = ocv - I R, P = V I
     const disc = ocv * ocv - 4 * rInt * P;
     const Icur = disc > 0 ? (ocv - Math.sqrt(disc)) / (2 * rInt) : ocv / (2 * rInt);
-    this.current = Icur; this.voltage = ocv - Icur * rInt; this.powerW = P;
+    this.current = Icur;
+    const vInst = Math.max(ocv * 0.5, ocv - Icur * rInt);
+    this.vFilt += (vInst - this.vFilt) * Math.min(1, dt / 0.08);
+    this.voltage = this.vFilt; this.powerW = P;
     this.soc = Math.max(0, this.soc - Icur * dt / 3600 / spec.battery.capacityAh);
     this.energyWh += P * dt / 3600;
 
@@ -323,12 +371,11 @@ export class DroneSim {
     this.collide(dt);
   }
 
-  private throttleToThrust(t: number) {
-    // returns fraction of max thrust per motor
+  /** stick to thrust fraction per motor; with the hover curve, centre stick is exactly hover */
+  private throttleToThrust(t: number, tMaxEff: number) {
     const c = Math.max(0, Math.min(1, t));
     if (!this.throttleCurveHover) return Math.max(0.0, c * c * 0.92 + c * 0.08);
-    // curve where centre stick = hover, smooth at both ends
-    const h = Math.min(0.9, this.hoverThrustFrac());
+    const h = Math.min(0.9, (this.totalMass * G) / (this.motors.length * Math.max(1e-6, tMaxEff)));
     if (c < 0.5) return h * Math.pow(c / 0.5, 1.6);
     return h + (1 - h) * Math.pow((c - 0.5) / 0.5, 1.4);
   }
@@ -348,6 +395,9 @@ export class DroneSim {
       const wWorld = this.w.clone().applyQuaternion(this.quat);
       const vp = this.vel.clone().add(new THREE.Vector3().crossVectors(wWorld, rWorld));
       const vn = vp.dot(nrm);
+      // a turning rotor blade is never survivable
+      if (ct.collider?.tag === 'blade' && !this.crashed && (this.armed || !this.onGround)) this.crash('Blade strike');
+      if (ct.collider?.tag === 'player') for (const l of this.bumpListeners) l(String(ct.collider.data), nrm.clone(), -vn);
       // positional correction
       this.pos.addScaledVector(nrm, ct.depth * 0.8);
       if (ct.surface === 'water') {
@@ -394,7 +444,7 @@ export class DroneSim {
       this.lastImpact = worstImpact;
       this.maxImpact = Math.max(this.maxImpact, worstImpact);
       for (const l of this.impactListeners) l(worstImpact, worstSurface);
-      const limit = this.spec.model === 'racer' ? 9 : this.spec.mass > 30 ? 2.6 : 3.6;
+      const limit = this.spec.model === 'racer' ? 9 : this.totalMass > 30 ? 2.6 : 3.6;
       if (worstImpact > limit && !this.crashed) this.crash(worstImpact > limit * 2 ? 'Hard impact' : 'Crash landing');
     }
     // keep us inside the world

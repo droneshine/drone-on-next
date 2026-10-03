@@ -122,6 +122,9 @@ export class FacadeBlock {
 
   pumpAnchor: THREE.Vector3;
 
+  /** fresh dirt for a new attempt */
+  resetGrime() { this.paintGrime(); this.tex.needsUpdate = true; }
+
   private paintGrime() {
     const g = this.ctx, W = this.W, H = this.H;
     const img = g.createImageData(W, H);

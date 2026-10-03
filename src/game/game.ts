@@ -7,7 +7,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { World, TimeOfDay } from '../world/world';
 import { DroneSim, Sticks } from '../sim/drone';
 import { DroneSpec, FEATURED, FlightMode, featured } from '../sim/spec';
-import { buildDroneVisual, animateProps, DroneVisual } from '../render/droneModels';
+import { buildDroneVisual, animateProps, disposeVisual, DroneVisual } from '../render/droneModels';
 import { Particles, Hose } from '../render/effects';
 import { Input } from '../input/input';
 import { audio } from '../audio/audio';
@@ -40,12 +40,41 @@ const DEFAULT_SETTINGS: Settings = {
   fov: 62, fpvFov: 110, volume: 0.7, throttleHover: true, showSticks: true, joystick: true, camUptilt: null, crashes: true, invertLook: false,
 };
 
+/** stored settings are untrusted: unknown keys dropped, wrong types and ranges replaced by defaults */
+function sanitizeSettings(raw: unknown): Settings {
+  const s = { ...DEFAULT_SETTINGS };
+  if (!raw || typeof raw !== 'object') return s;
+  const r = raw as Record<string, unknown>;
+  const n = (k: keyof Settings, lo: number, hi: number) => { const v = r[k]; if (typeof v === 'number' && isFinite(v)) (s as unknown as Record<string, number>)[k] = Math.min(hi, Math.max(lo, v)); };
+  const b = (k: keyof Settings) => { if (typeof r[k] === 'boolean') (s as unknown as Record<string, boolean>)[k] = r[k] as boolean; };
+  if (r.quality === 'low' || r.quality === 'high') s.quality = r.quality;
+  if (['day', 'golden', 'overcast', 'dusk'].includes(r.time as string)) s.time = r.time as TimeOfDay;
+  n('windSpeed', 0, 14); n('windDir', 0, 360); n('gust', 0, 1); n('fov', 40, 100); n('fpvFov', 70, 140); n('volume', 0, 1);
+  b('throttleHover'); b('showSticks'); b('joystick'); b('crashes'); b('invertLook');
+  s.camUptilt = typeof r.camUptilt === 'number' && isFinite(r.camUptilt) ? Math.min(60, Math.max(-30, r.camUptilt)) : null;
+  return s;
+}
+
 export interface Telemetry {
   alt: number; agl: number; speed: number; vz: number; heading: number; soc: number; volt: number; amps: number; watts: number;
   mode: FlightMode; armed: boolean; crashed: boolean; crashReason: string; sticks: Sticks; wind: number; windDir: number;
   dist: number; flightTime: number; tank: number | null; thermal: boolean; cam: CamMode; spraying: boolean; gimbal: number;
   missionHud: string; tilt: number; device: string;
 }
+
+// Keeps HDR values in a range the half float targets and bloom can handle. The sky's sun can
+// reach the float16 limit, and Infinity or NaN would spread through the bloom chain and black out the frame.
+const clampShader = {
+  uniforms: { tDiffuse: { value: null }, uMax: { value: 16 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }',
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uMax; varying vec2 vUv;
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      if (any(isnan(c.rgb)) || any(isinf(c.rgb))) c.rgb = vec3(uMax);
+      gl_FragColor = vec4(min(c.rgb, vec3(uMax)), c.a);
+    }`,
+};
 
 const thermalShader = {
   uniforms: { tDiffuse: { value: null }, uOn: { value: 0 }, uTime: { value: 0 } },
@@ -63,6 +92,7 @@ const thermalShader = {
         float v = smoothstep(1.1, 0.35, length(vUv - 0.5));
         c.rgb *= mix(0.75, 1.0, v);
       }
+      if (any(isnan(c.rgb)) || any(isinf(c.rgb))) c.rgb = vec3(1.0);
       gl_FragColor = c;
     }`,
 };
@@ -77,6 +107,8 @@ export class Game {
   state: State = 'boot';
   camMode: CamMode = 'orbit';
   spec: DroneSpec = featured('dscan');
+  /** the drone the pilot picked in the hangar; missions borrow others and give this one back */
+  chosenSpec: DroneSpec = featured('dscan');
   sim!: DroneSim;
   visual!: DroneVisual;
   particles = new Particles(7000);
@@ -95,15 +127,15 @@ export class Game {
   private acc = 0;
   private last = performance.now();
   private bloom: UnrealBloomPass;
+  clampPass!: ShaderPass;
   private thermalPass: ShaderPass;
   private camPos = new THREE.Vector3(10, 5, 14);
   private camLook = new THREE.Vector3();
   private orbitT = 0;
-  private freeYaw = 0; private freePitch = -0.3;
+  freeYaw = 0; freePitch = -0.3;
   private markerObj: THREE.Group;
   markerPos: THREE.Vector3 | null = null;
   markerLabel = '';
-  private ghost: { t: number; p: number[] }[] = [];
   private raceTracker: RingTracker | null = null;
   raceTime = 0; raceBest = 0; raceRunning = false; raceIdx = 0; raceCount = 0;
   private home = new THREE.Vector3();
@@ -112,20 +144,25 @@ export class Game {
   /** true during a multiplayer countdown: motors stay off */
   raceLocked = false;
   private tagPressed = false;
-  private flightLog = { dist: 0 };
   listeners: { [k: string]: ((...a: unknown[]) => void)[] } = {};
   paused = false;
   visualLoaded = false;
   private debris: { m: THREE.Mesh; v: THREE.Vector3; w: THREE.Vector3 }[] = [];
   losPilot = new THREE.Vector3(0, 1.7, 14);
+  private droneToken = 0;
+  courseBeforeMission: { map: MapData; origin: Builder['origin'] } | null = null;
+  private batteryWarned = 1;
+  private autosaveTimer = 0;
+  contextLost = false;
+  private resizeQueued = false;
 
   constructor(canvas: HTMLCanvasElement) {
-    this.settings = { ...DEFAULT_SETTINGS, ...getLS<Partial<Settings>>('settings', {}) };
+    this.settings = sanitizeSettings(getLS<Partial<Settings>>('settings', {}));
     const r = this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
-    r.setPixelRatio(Math.min(devicePixelRatio, this.settings.quality === 'high' ? 2 : 1.25));
+    r.setPixelRatio(this.pixelRatio());
     r.setSize(innerWidth, innerHeight);
     r.shadowMap.enabled = true;
-    r.shadowMap.type = THREE.PCFSoftShadowMap;
+    r.shadowMap.type = THREE.PCFShadowMap;
     r.toneMapping = THREE.ACESFilmicToneMapping;
     r.outputColorSpace = THREE.SRGBColorSpace;
     this.camera = new THREE.PerspectiveCamera(this.settings.fov, innerWidth / innerHeight, 0.03, 9000);
@@ -144,21 +181,43 @@ export class Game {
     const rt = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: this.settings.quality === 'high' ? 4 : 2 });
     this.composer = new EffectComposer(r, rt);
     this.composer.addPass(new RenderPass(this.world.scene, this.camera));
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.45, 3.2);
+    this.clampPass = new ShaderPass(clampShader);
+    this.composer.addPass(this.clampPass);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.25, 0.05, 8);
     this.composer.addPass(this.bloom);
     this.thermalPass = new ShaderPass(thermalShader);
     this.composer.addPass(this.thermalPass);
     this.composer.addPass(new OutputPass());
     this.builder = new Builder(this.world);
+    this.builder.onChanged = () => { this.scheduleAutosave(); this.emit('build-changed'); };
     this.markerObj = makeMarker();
     this.markerObj.visible = false;
     this.world.scene.add(this.markerObj);
-    addEventListener('resize', () => this.resize());
+    // resize once now so every target is sized with the pixel ratio, then debounce to one per frame
+    this.resize();
+    addEventListener('resize', () => {
+      if (this.resizeQueued) return;
+      this.resizeQueued = true;
+      requestAnimationFrame(() => { this.resizeQueued = false; this.resize(); });
+    });
+    canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.contextLost = true; audio.silence(); this.emit('gl', 'lost'); });
+    canvas.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      this.world.setTime(this.world.currentTime);
+      this.resize();
+      this.emit('gl', 'restored');
+    });
     audio.setVolume(this.settings.volume);
   }
 
+  private pixelRatio() { return Math.min(devicePixelRatio, this.settings.quality === 'high' ? 1.75 : 1.25); }
+
   on(ev: string, fn: (...a: unknown[]) => void) { (this.listeners[ev] ??= []).push(fn); }
-  emit(ev: string, ...a: unknown[]) { for (const f of this.listeners[ev] ?? []) f(...a); }
+  emit(ev: string, ...a: unknown[]) {
+    for (const f of this.listeners[ev] ?? []) {
+      try { f(...a); } catch (e) { console.error(e); }
+    }
+  }
   toast(t: string) { this.emit('toast', t); }
 
   saveSettings() { setLS('settings', this.settings); }
@@ -173,21 +232,45 @@ export class Game {
   }
 
   resize() {
+    this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.setSize(innerWidth, innerHeight);
+    this.composer.setPixelRatio(this.pixelRatio());
     this.composer.setSize(innerWidth, innerHeight);
     this.camera.aspect = innerWidth / innerHeight;
     this.camera.updateProjectionMatrix();
   }
 
+  /** compile shaders behind the boot screen instead of freezing on first use */
+  async warmup() {
+    try { await this.renderer.compileAsync(this.world.scene, this.camera); } catch { /* optional */ }
+  }
+
   // ------------------------------------------------------------------ drone management
+  /** the pilot's own pick in the hangar: remembered across visits */
+  async chooseDrone(spec: DroneSpec) {
+    this.chosenSpec = spec;
+    setLS('lastDrone', spec.id);
+    await this.setDrone(spec);
+  }
+
   async setDrone(spec: DroneSpec, spawn?: { pos: THREE.Vector3; yaw: number }) {
-    if (this.visual) { this.world.scene.remove(this.visual.root); }
-    if (this.hose) { this.world.scene.remove(this.hose.mesh); this.hose = null; }
+    const token = ++this.droneToken;
+    const sp = spawn ?? { pos: this.world.pads[1].clone(), yaw: 0 };
+    // same drone again: keep the model, just move it
+    const reuse = this.visualLoaded && spec === this.spec && this.visual;
+    let visual = this.visual;
+    if (!reuse) {
+      visual = await buildDroneVisual(spec);
+      // a newer call won the race while this model was loading: throw this one away
+      if (token !== this.droneToken) { disposeVisual(visual); return; }
+      if (this.visual) { this.world.scene.remove(this.visual.root); disposeVisual(this.visual); }
+      this.world.scene.add(visual.root);
+    }
+    if (this.hose) { this.world.scene.remove(this.hose.mesh); this.hose.mesh.geometry.dispose(); this.hose = null; }
     this.spec = spec;
+    this.visual = visual;
     this.sim = new DroneSim(spec, this.world.colliders);
     this.sim.throttleCurveHover = this.settings.throttleHover;
-    this.visual = await buildDroneVisual(spec);
-    this.world.scene.add(this.visual.root);
     this.visualLoaded = true;
     this.input.throttleSprings = this.sim.mode === 'gps';
     if (spec.hose) {
@@ -196,12 +279,11 @@ export class Game {
       this.world.scene.add(this.hose.mesh);
     }
     this.gimbalPitch = spec.tool === 'lance' ? -5 : spec.tool === 'thermal' ? -35 : -15;
-    const sp = spawn ?? { pos: this.world.pads[1].clone(), yaw: 0 };
     this.home.copy(sp.pos); this.homeYaw = sp.yaw;
     this.world.clearSpot.set(sp.pos.x, Math.max(3, spec.armLength * 2 + spec.propDiameter + 1), sp.pos.z);
     this.resetDrone();
-    setLS('lastDrone', spec.id);
     this.mp?.announce();
+    this.emit('drone');
   }
 
   private portablePump: THREE.Group | null = null;
@@ -225,19 +307,22 @@ export class Game {
 
   resetDrone() {
     this.sim.reset(this.home, this.homeYaw);
-    this.tank = this.spec.tool === 'sprayDown' ? (this.spec.tank ?? 20) : null;
+    this.tank = this.spec.tool === 'sprayDown' ? (this.spec.tank ?? 10) : null;
     this.sim.payload = this.tank ?? 0;
-    this.input.setKeyboardThrottle(0);
+    this.input.setThrottleRest(this.input.throttleSprings);
     this.flightTime = 0;
+    this.batteryWarned = 1;
     this.particles.clear();
-    for (const d of this.debris) this.world.scene.remove(d.m);
+    for (const d of this.debris) { this.world.scene.remove(d.m); }
     this.debris = [];
     this.visual.root.visible = true;
+    for (const p of this.visual.props) p.blades.visible = true;
+    let nearFacade = false;
     if (this.hose) {
       // the hose runs from the facade pump when DShine starts there, otherwise a mobile
       // pump stands next to the take off spot, like the trailer on a real job
       const fixed = this.world.facade.pumpAnchor;
-      const nearFacade = Math.hypot(this.home.x - fixed.x, this.home.z - fixed.z) < this.hose.length * 0.8;
+      nearFacade = Math.hypot(this.home.x - fixed.x, this.home.z - fixed.z) < this.hose.length * 0.8;
       if (nearFacade) { this.hose.anchor.copy(fixed); this.setPortablePump(null); }
       else {
         const off = new THREE.Vector3(-3.2, 0, 2.4).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.homeYaw);
@@ -248,12 +333,16 @@ export class Game {
       }
       this.hose.reset(this.attachPoint());
     } else this.setPortablePump(null);
-    if (this.spec.hose) {
-      // DShine lives next to the pump
-      this.losPilot.copy(this.world.facade.pumpAnchor).add(new THREE.Vector3(-6, -0.5, 4));
-    } else this.losPilot.copy(this.home).add(new THREE.Vector3(0, 1.7, 14));
+    // the pilot stands behind the take off spot, at the facade pump for facade work
+    const behind = new THREE.Vector3(Math.sin(this.homeYaw), 0, Math.cos(this.homeYaw));
+    if (nearFacade) this.losPilot.copy(this.world.facade.pumpAnchor).add(new THREE.Vector3(-6, -0.5, 4));
+    else this.losPilot.copy(this.home).addScaledVector(behind, 12);
     this.losPilot.y = heightAt(this.losPilot.x, this.losPilot.z) + 1.7;
-    this.camPos.copy(this.home).add(new THREE.Vector3(0, 3, 8));
+    // chase camera starts behind the drone, not swinging in from the old spot
+    const L = this.spec.armLength * 2 + this.spec.propDiameter;
+    const dist = Math.max(2.4, L * (L > 2 ? 2.3 : 3.2));
+    this.camPos.copy(this.home).addScaledVector(behind, dist).add(new THREE.Vector3(0, dist * 0.38 + 0.3, 0));
+    this.camLook.copy(this.home);
   }
 
   private attachPoint() {
@@ -263,7 +352,10 @@ export class Game {
   setMode(m: FlightMode) {
     this.sim.mode = m;
     this.input.throttleSprings = m === 'gps';
-    if (m !== 'gps' && this.input.device === 'keyboard') this.input.setKeyboardThrottle(this.sim.armed ? 0.45 : 0);
+    // switching in the air: throttle continues at hover, on the ground it rests at the bottom
+    if (m !== 'gps') this.input.setKeyboardThrottle(this.sim.armed ? 0.5 : 0);
+    this.input.setThrottleRest(m === 'gps', this.sim.armed);
+    this.emit('mode');
     this.toast(m === 'gps' ? 'GPS hold. Release the sticks and it stays put.' : m === 'angle' ? 'Angle mode. Self levelling, you hold altitude.' : 'Acro mode. No self levelling. This is real flying.');
   }
 
@@ -271,25 +363,35 @@ export class Game {
   async enterMenu() {
     this.endMission();
     this.builder.active = false; this.builder.hideGhost();
+    this.flushAutosave();
+    this.paused = false;
     this.state = 'menu';
     this.camMode = 'orbit';
     this.world.setThermal(false);
-    if (!this.visualLoaded) await this.setDrone(this.spec);
+    this.world.setWind(this.settings.windSpeed, this.settings.windDir, this.settings.gust);
+    this.setMarker(null);
+    if (!this.visualLoaded || this.spec !== this.chosenSpec) await this.setDrone(this.chosenSpec);
     else { this.home.copy(this.world.pads[1]); this.homeYaw = 0; this.resetDrone(); }
     audio.silence();
     document.exitPointerLock?.();
     this.emit('state', this.state);
   }
 
-  async startFreeFlight(map?: MapData) {
+  /** Free flight. A map passed in (share link) is validated and never overwrites the pilot's own course. */
+  async startFreeFlight(map?: unknown) {
     this.endMission();
+    this.flushAutosave();
+    this.paused = false;
     this.state = 'fly';
     this.builder.active = false; this.builder.hideGhost();
-    if (map) this.builder.load(map);
-    else if (!this.builder.map.pieces.length) this.builder.load(getLS<MapData>('map', starterMap()));
-    const start = this.builder.startPad();
-    const spawn = start ?? { pos: this.world.pads[1].clone(), yaw: 0 };
-    await this.setDrone(this.spec, spawn);
+    if (map !== undefined) {
+      if (!this.builder.load(map, { origin: 'shared' })) { this.toast('That course link is damaged, loading your own course'); this.loadOwnCourse(); }
+    } else if (!this.mp && (this.builder.origin !== 'own' || !this.builder.map.pieces.length)) {
+      // FLY from the menu is your own course; a friend's link only lasts for that flight
+      this.loadOwnCourse();
+    }
+    const spawn = this.spawnPoint();
+    await this.setDrone(this.spec === this.chosenSpec ? this.spec : this.chosenSpec, spawn);
     this.world.setWind(this.settings.windSpeed, this.settings.windDir, this.settings.gust);
     this.camMode = this.spec.model === 'racer' ? 'fpv' : 'chase';
     this.resetRace();
@@ -297,21 +399,49 @@ export class Game {
     this.emit('state', this.state);
   }
 
+  private loadOwnCourse() {
+    const own = getLS<MapData | null>('map', null);
+    if (!own || !this.builder.load(own, { origin: 'own' })) this.builder.load(starterMap(), { origin: 'own' });
+  }
+
+  /** start pad, spread out per seat in a squad so nobody spawns inside another drone */
+  private spawnPoint(): { pos: THREE.Vector3; yaw: number } {
+    const start = this.builder.startPad() ?? { pos: this.world.pads[1].clone(), yaw: 0 };
+    if (!this.mp) return start;
+    const slot = this.mp.seat();
+    const spacing = this.mp.gridSpacing();
+    const side = new THREE.Vector3(Math.cos(start.yaw), 0, -Math.sin(start.yaw));
+    const back = new THREE.Vector3(Math.sin(start.yaw), 0, Math.cos(start.yaw));
+    const pos = start.pos.clone().addScaledVector(side, ((slot % 4) - 1.5) * spacing).addScaledVector(back, Math.floor(slot / 4) * spacing);
+    pos.y = heightAt(pos.x, pos.z) + 0.1;
+    return { pos, yaw: start.yaw };
+  }
+
   resetRace() {
     const cps = this.builder.checkpoints();
     this.raceTracker = this.builder.map.race && cps.length >= 2 ? new RingTracker(cps) : null;
     this.raceRunning = false; this.raceTime = 0; this.raceIdx = 0; this.raceCount = cps.length;
-    this.raceBest = getLS<Record<string, number>>('raceBest', {})[this.builder.map.name] ?? 0;
+    this.raceBest = getLS<Record<string, number>>('raceBest', {})[this.builder.signature()] ?? 0;
+    if (this.state === 'fly') this.setMarker(this.raceTracker ? cps[0].pos : null, this.raceTracker ? 'Gate 1' : '');
   }
 
   async startMission(m: Mission) {
+    if (this.state === 'mission' && this.mission === m) return;
     this.endMission();
     this.mission = m;
+    this.paused = false;
     this.state = 'mission';
+    // missions fly in a clean world: park the course and bring it back afterwards
+    if (this.builder.map.pieces.length) {
+      this.flushAutosave();
+      this.courseBeforeMission = { map: { ...this.builder.map, pieces: this.builder.map.pieces.slice() }, origin: this.builder.origin };
+    }
     this.builder.clear();
+    this.world.setThermal(false);
+    // every mission is scored on its own drone
     const spec = FEATURED.find(f => f.id === m.drone) ?? featured('dscan');
-    const useSpec = m.lockDrone || !this.spec ? spec : this.spec.featured || this.spec.model === 'generic' ? (m.lockDrone ? spec : this.spec) : spec;
-    await this.setDrone(m.lockDrone ? spec : useSpec, m.spawn(this.world));
+    await this.setDrone(spec, m.spawn(this.world));
+    if (this.mission !== m) return;
     if (m.wind) this.world.setWind(m.wind.speed, m.wind.dir, m.wind.gust);
     else this.world.setWind(1.5, 70, 0.2);
     this.camMode = m.forceCam ?? (this.spec.model === 'racer' ? 'fpv' : 'chase');
@@ -327,30 +457,66 @@ export class Game {
     this.emit('state', this.state);
   }
 
-  restartMission() { if (this.mission) { const id = this.mission.id; this.missions = allMissions(); const m = this.missions.find(x => x.id === id)!; this.startMission(m); } }
+  restartMission() {
+    if (!this.mission) return;
+    const id = this.mission.id;
+    this.endMission();
+    this.missions = allMissions();
+    const m = this.missions.find(x => x.id === id)!;
+    this.startMission(m);
+  }
 
   private endMission() {
-    if (this.mission && this.mctx) this.sim.impactListeners = [];
+    if (this.mission) {
+      try { this.mission.cleanup?.(this.world); } catch (e) { console.error(e); }
+      if (this.sim) this.sim.impactListeners = [];
+      this.world.solar.soil(1, 3);
+      this.world.facade.resetGrime();
+      this.world.solar.hotspots.forEach(h => (h.found = false));
+      this.world.rings.forEach(r => ((r.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.2));
+      this.world.setThermal(false);
+      this.world.setWind(this.settings.windSpeed, this.settings.windDir, this.settings.gust);
+    }
     this.mission = null; this.mctx = null; this.setMarker(null);
-    if (this.world.solar) this.world.solar.soil(1, 3);
-    this.world.rings.forEach(r => ((r.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.2));
+    if (this.courseBeforeMission) {
+      this.builder.load(this.courseBeforeMission.map, { origin: this.courseBeforeMission.origin });
+      this.courseBeforeMission = null;
+    }
   }
 
   async enterBuild() {
     this.endMission();
+    this.paused = false;
     this.state = 'build';
-    if (!this.builder.map.pieces.length) this.builder.load(getLS<MapData>('map', starterMap()));
+    // your own island: shared courses are for flying, building always happens on your own course
+    if (!this.mp && (this.builder.origin !== 'own' || !this.builder.map.pieces.length)) this.loadOwnCourse();
     if (!this.visualLoaded) await this.setDrone(this.spec);
     this.builder.active = true;
     this.builder.setGhost(this.builder.selected);
     this.camMode = 'free';
     const fp = this.builder.startPad()?.pos ?? new THREE.Vector3(-150, 0, 60);
-    this.camPos.set(fp.x, 14, fp.z + 30);
+    this.camPos.set(fp.x, heightAt(fp.x, fp.z + 30) + 14, fp.z + 30);
     this.freeYaw = 0; this.freePitch = -0.35;
     this.emit('state', this.state);
   }
 
-  saveMap() { setLS('map', this.builder.map); this.toast('Map saved on this device'); }
+  /** your own course is saved automatically a moment after every edit */
+  private scheduleAutosave() {
+    if (this.builder.origin !== 'own' || this.mp || this.mission) return;
+    clearTimeout(this.autosaveTimer);
+    this.autosaveTimer = window.setTimeout(() => this.saveMap(true), 600);
+  }
+  private flushAutosave() {
+    if (!this.autosaveTimer) return;
+    clearTimeout(this.autosaveTimer); this.autosaveTimer = 0;
+    this.saveMap(true);
+  }
+
+  saveMap(silent = false) {
+    if (this.builder.origin !== 'own' || this.mp) return;
+    setLS('map', this.builder.map);
+    if (!silent) this.toast('Course saved on this device');
+  }
 
   setMarker(p: THREE.Vector3 | null, label = '') {
     this.markerPos = p ? p.clone() : null; this.markerLabel = label;
@@ -363,10 +529,11 @@ export class Game {
     const frame = () => {
       requestAnimationFrame(frame);
       const now = performance.now();
-      let dt = Math.min(0.05, (now - this.last) / 1000);
+      // real time down to 10 fps; below that the sim slows rather than tunnelling
+      let dt = Math.min(0.1, (now - this.last) / 1000);
       this.last = now;
-      if (document.hidden) dt = 0;
-      this.tick(dt);
+      if (document.hidden || this.contextLost) dt = 0;
+      try { this.tick(dt); } catch (e) { console.error(e); this.input.endFrame(); }
     };
     requestAnimationFrame(frame);
   }
@@ -388,15 +555,16 @@ export class Game {
         const h = 1 / 400;
         this.acc += dt;
         let steps = 0;
-        while (this.acc >= h && steps < 40) {
+        while (this.acc >= h && steps < 48) {
           if (this.hose) this.sim.extraForce.copy(this.hose.force); else this.sim.extraForce.set(0, 0, 0);
           this.sim.step(h, this.raceLocked ? { throttle: 0, yaw: 0, pitch: 0, roll: 0 } : inp.sticks);
           this.acc -= h; steps++;
         }
-        if (!this.sim.onGround) this.flightTime += dt;
+        if (steps >= 48) this.acc = 0;
+        if (!this.sim.onGround && this.sim.armed) this.flightTime += dt;
         if (this.hose) this.hose.update(dt, this.attachPoint());
-        this.flightLog.dist += this.sim.speed() * dt;
         this.updateTools(dt);
+        this.updateBattery();
         this.updateRace(dt);
         this.updateMission(dt);
         if (this.sim.crashed && !this.visual.root.userData.crashFx) { this.visual.root.userData.crashFx = true; this.crashFx(); }
@@ -440,15 +608,16 @@ export class Game {
     this.thermalPass.uniforms.uOn.value = this.world.thermal ? 1 : 0;
     this.thermalPass.uniforms.uTime.value = performance.now() / 1000 % 10;
     this.bloom.enabled = !this.world.thermal;
-    this.composer.render(dt);
-    this.emit('frame', dt);
-    inp.endFrame();
+    if (!this.contextLost) this.composer.render(dt);
+    try { this.emit('frame', dt); } finally { inp.endFrame(); }
   }
 
   private handleFlightKeys() {
     const inp = this.input;
     if (inp.hit('KeyR') || inp.padHit(8)) {
-      if (this.state === 'mission' && this.mission) this.restartMission(); else { this.resetDrone(); this.resetRace(); }
+      if (this.state === 'mission' && this.mission) this.restartMission();
+      else if (this.mp && this.mp.raceState !== 'idle') this.resetDrone(); // respawn, race clock keeps running
+      else { this.resetDrone(); this.resetRace(); }
     }
     if (inp.hit('KeyC') || inp.padHit(5)) {
       const order: CamMode[] = ['chase', 'fpv', 'los'];
@@ -468,7 +637,10 @@ export class Game {
     if (up) this.gimbalPitch = Math.min(this.spec.tool === 'lance' ? 35 : 20, this.gimbalPitch + 1.2);
     if (dn) this.gimbalPitch = Math.max(-90, this.gimbalPitch - 1.2);
     const pad = inp.activePad();
-    this.spraying = (inp.keys.has('Space') || (pad?.buttons[0]?.pressed ?? false) || (inp.device === 'rc' && (pad?.axes[5] ?? -1) > 0.3) || inp.touchSpray) && !this.sim.crashed;
+    const wants = inp.keys.has('Space') || (pad?.buttons[0]?.pressed ?? false) || (inp.device === 'rc' && (pad?.axes[5] ?? -1) > 0.3) || inp.touchSpray;
+    // only a drone with a working sprayer sprays: no tank, no hiss
+    const canSpray = this.spec.tool === 'lance' || (this.spec.tool === 'sprayDown' && (this.tank ?? 0) > 0);
+    this.spraying = wants && canSpray && this.sim.armed && !this.sim.crashed;
     this.tagPressed = inp.hit('KeyF') || inp.padHit(2) || inp.touchTag;
     inp.touchTag = false;
   }
@@ -476,15 +648,16 @@ export class Game {
   // ------------------------------------------------------------------ tools: spray, lance, thermal tag
   private updateTools(dt: number) {
     const s = this.sim, spec = this.spec;
-    const canSpray = spec.tool === 'sprayDown' ? (this.tank ?? 0) > 0 : spec.tool === 'lance';
     if (spec.tool === 'sprayDown' && this.state === 'fly') {
-      // refill on any base pad
-      if (s.onGround && this.world.pads.some(p => p.distanceTo(s.pos) < 4) && (this.tank ?? 0) < (spec.tank ?? 0)) {
+      // refill on any base pad or the course start pad
+      const pads = [...this.world.pads];
+      const sp = this.builder.startPad(); if (sp) pads.push(sp.pos);
+      if (s.onGround && pads.some(p => Math.hypot(p.x - s.pos.x, p.z - s.pos.z) < 4) && (this.tank ?? 0) < (spec.tank ?? 0)) {
         this.tank = Math.min(spec.tank ?? 0, (this.tank ?? 0) + dt * 10); s.payload = this.tank;
       }
     }
-    if (!this.spraying || !canSpray || !s.armed) return;
-    if (spec.tool === 'sprayDown' && this.state === 'fly') { this.tank = Math.max(0, (this.tank ?? 0) - (spec.flow ?? 5) / 60 * dt); s.payload = this.tank; }
+    if (!this.spraying) return;
+    if (spec.tool === 'sprayDown') { this.tank = Math.max(0, (this.tank ?? 0) - (spec.flow ?? 4) / 60 * dt); s.payload = this.tank; }
     const m = new THREE.Matrix4().makeRotationFromQuaternion(s.quat);
     for (const nz of this.visual.nozzles) {
       let dirLocal = nz.dir.clone();
@@ -532,40 +705,62 @@ export class Game {
     }
   }
 
+  /** spoken warnings before the pack runs out, like a real ground station */
+  private updateBattery() {
+    const soc = this.sim.soc;
+    if (!this.sim.armed) return;
+    if (soc < 0.2 && this.batteryWarned > 0.2) { this.batteryWarned = 0.2; audio.warn(); this.toast('Battery 20 %. Time to head home.'); }
+    if (soc < 0.1 && this.batteryWarned > 0.1) { this.batteryWarned = 0.1; audio.warn(); this.toast('Battery critical. Land now.'); }
+    if (soc < 0.05 && this.batteryWarned > 0.05) {
+      this.batteryWarned = 0.05; audio.warn();
+      this.toast(this.sim.mode === 'gps' ? 'Battery empty. Landing automatically.' : 'Battery empty. Motors are fading.');
+    }
+  }
+
   private updateRace(dt: number) {
     if (this.state !== 'fly' || !this.raceTracker) return;
-    if (this.mp && this.mp.raceState === 'running' && this.raceTracker.idx < this.raceTracker.rings.length) {
-      // in a multiplayer race the clock starts at GO, not at take off
-      if (!this.raceRunning) { this.raceRunning = true; this.raceTime = 0; }
-    } else if (!this.mp || this.mp.raceState === 'idle') {
+    const mp = this.mp;
+    const multi = !!mp && mp.raceState !== 'idle';
+    if (multi) {
+      // one shared clock from GO, so crashes and resets cost real time
+      if (mp!.raceState === 'running' && mp!.selfFinish == null && mp!.inRace()) { this.raceRunning = true; this.raceTime = mp!.raceElapsed(); }
+      else this.raceRunning = false;
+    } else {
       if (!this.raceRunning && !this.sim.onGround && this.sim.agl > 0.5) { this.raceRunning = true; this.raceTime = 0; }
+      if (this.raceRunning) this.raceTime += dt;
     }
-    if (this.raceRunning) this.raceTime += dt;
+    if (multi && (mp!.raceState !== 'running' || mp!.selfFinish != null || !mp!.inRace())) return;
     if (this.raceTracker.update(this.sim.pos)) {
       audio.chime(this.raceTracker.idx);
       this.raceIdx = this.raceTracker.idx;
-      if (this.raceTracker.done && this.mp && this.mp.raceState !== 'idle') {
-        this.mp.localFinish(this.raceTime);
+      const cps = this.raceTracker.rings;
+      if (!this.raceTracker.done) this.setMarker(cps[this.raceTracker.idx].pos, `Gate ${this.raceTracker.idx + 1}`);
+      if (this.raceTracker.done && multi) {
+        mp!.localFinish(this.raceTime);
         this.raceRunning = false;
+        this.setMarker(null);
         this.toast(`Finished in ${this.raceTime.toFixed(2)} s`);
         audio.success();
         return;
       }
       if (this.raceTracker.done) {
         const t = this.raceTime;
+        const key = this.builder.signature();
         const bests = getLS<Record<string, number>>('raceBest', {});
-        const prev = bests[this.builder.map.name];
-        if (!prev || t < prev) { bests[this.builder.map.name] = t; setLS('raceBest', bests); this.raceBest = t; this.toast(`New best lap ${t.toFixed(2)} s`); audio.success(); }
+        const prev = bests[key];
+        if (!prev || t < prev) { bests[key] = t; setLS('raceBest', bests); this.raceBest = t; this.toast(`New best lap ${t.toFixed(2)} s`); audio.success(); }
         else this.toast(`Lap ${t.toFixed(2)} s. Best ${prev.toFixed(2)} s`);
         this.raceTracker = new RingTracker(this.builder.checkpoints());
         this.raceRunning = true; this.raceTime = 0; this.raceIdx = 0;
+        this.setMarker(cps[0].pos, 'Gate 1');
       }
     }
   }
 
   private updateMission(dt: number) {
     if (this.state !== 'mission' || !this.mission || !this.mctx) return;
-    if (!this.missionStarted && (this.sim.armed || !this.sim.onGround)) this.missionStarted = true;
+    // the clock starts when the motors arm, not when the drone settles on its gear
+    if (!this.missionStarted && this.sim.armed) this.missionStarted = true;
     if (this.missionStarted) this.missionTime += dt;
     const c = this.mctx;
     c.time = this.missionTime; c.spraying = this.spraying; c.tagPressed = this.tagPressed;
@@ -573,12 +768,12 @@ export class Game {
     c.aimRay.d.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
     const st = this.mission.update(c, dt);
     if (st !== 'running') {
-      const res = st === 'success' ? this.mission.result(c) : { stars: 0, score: 'Failed', detail: this.mission.failReason ?? '', time: this.missionTime };
+      const res = st === 'success' ? this.mission.result(c) : { stars: 0, score: 'Failed', detail: this.mission.failReason || this.sim.crashReason || 'Mission failed', time: this.missionTime };
       if (st === 'success') {
         const p = progress();
         p.stars[this.mission.id] = Math.max(p.stars[this.mission.id] ?? 0, res.stars);
         const prevBest = p.best[this.mission.id];
-        if (!prevBest || res.time < prevBest) p.best[this.mission.id] = res.time;
+        if (res.time > 0 && (!prevBest || res.time < prevBest)) p.best[this.mission.id] = res.time;
         res.best = p.best[this.mission.id];
         saveProgress(p);
         audio.success();
@@ -591,7 +786,7 @@ export class Game {
 
   private crashFx() {
     audio.crash();
-    if (!this.settings.crashes) return;
+    if (!this.settings.crashes) { this.emit('crash', this.sim.crashReason); return; }
     // a few parts break away
     const parts = this.visual.props.slice(0, 2);
     for (const p of parts) {
@@ -618,44 +813,67 @@ export class Game {
   // ------------------------------------------------------------------ build mode
   private handleBuild(dt: number) {
     const inp = this.input, b = this.builder;
-    // free camera: right mouse or pointer lock to look, WASD to move, Q/E down/up
+    const k = inp.keys;
+    // look: hold the right mouse button, or the right on screen stick
     const locked = document.pointerLockElement != null;
     if (locked || inp.mouseButtons.has(2)) {
       this.freeYaw -= inp.mouseDX * 0.0025;
       this.freePitch = THREE.MathUtils.clamp(this.freePitch - inp.mouseDY * 0.0025 * (this.settings.invertLook ? -1 : 1), -1.5, 1.5);
     }
-    const pad = inp.activePad();
-    if (pad && inp.device !== 'keyboard') {
-      this.freeYaw -= (Math.abs(pad.axes[2]) > 0.12 ? pad.axes[2] : 0) * dt * 2;
-      this.freePitch = THREE.MathUtils.clamp(this.freePitch - (Math.abs(pad.axes[3]) > 0.12 ? pad.axes[3] : 0) * dt * 2, -1.5, 1.5);
+    const pad = inp.device === 'gamepad' ? inp.activePad() : null;
+    const dz = (v: number | undefined) => (v != null && Math.abs(v) > 0.15 ? v : 0);
+    if (pad) {
+      this.freeYaw -= dz(pad.axes[2]) * dt * 2;
+      this.freePitch = THREE.MathUtils.clamp(this.freePitch - dz(pad.axes[3]) * dt * 2, -1.5, 1.5);
+    }
+    const T = inp.touch;
+    if (inp.device === 'touch' && T.right.active) {
+      this.freeYaw -= T.right.x * dt * 1.8;
+      this.freePitch = THREE.MathUtils.clamp(this.freePitch + T.right.y * dt * 1.4, -1.5, 1.5);
     }
     const fwd = new THREE.Vector3(-Math.sin(this.freeYaw), 0, -Math.cos(this.freeYaw));
     const right = new THREE.Vector3(-fwd.z, 0, fwd.x);
-    const sp = (inp.keys.has('ShiftLeft') ? 40 : 14) * dt;
-    const k = inp.keys;
+    const fast = k.has('ShiftLeft') || k.has('ShiftRight');
+    const sp = (fast ? 40 : 14) * dt;
     const mv = new THREE.Vector3();
     if (k.has('KeyW')) mv.add(fwd); if (k.has('KeyS')) mv.sub(fwd);
     if (k.has('KeyD')) mv.add(right); if (k.has('KeyA')) mv.sub(right);
-    if (k.has('KeyE') || k.has('Space')) mv.y += 1; if (k.has('KeyQ') || k.has('ControlLeft')) mv.y -= 1;
-    if (pad && inp.device !== 'keyboard') { mv.addScaledVector(fwd, -(Math.abs(pad.axes[1]) > 0.12 ? pad.axes[1] : 0)); mv.addScaledVector(right, Math.abs(pad.axes[0]) > 0.12 ? pad.axes[0] : 0); }
+    if (k.has('KeyE') || k.has('Space')) mv.y += 1; if (k.has('KeyQ')) mv.y -= 1;
+    if (pad) { mv.addScaledVector(fwd, -dz(pad.axes[1])); mv.addScaledVector(right, dz(pad.axes[0])); }
+    if (inp.device === 'touch' && T.left.active) { mv.addScaledVector(fwd, T.left.y); mv.addScaledVector(right, T.left.x); }
+    if (inp.touchBuildLift) mv.y += inp.touchBuildLift;
     this.camPos.addScaledVector(mv, sp);
-    this.camPos.y = Math.max(heightAt(this.camPos.x, this.camPos.z) + 1, this.camPos.y);
-    // piece selection
+    this.camPos.y = Math.min(400, Math.max(heightAt(this.camPos.x, this.camPos.z) + 1, this.camPos.y));
+    this.camPos.x = THREE.MathUtils.clamp(this.camPos.x, -760, 760); this.camPos.z = THREE.MathUtils.clamp(this.camPos.z, -760, 760);
+    // piece selection, letters and digits including the number pad
     for (const p of PIECES) {
-      const code = p.key.length === 1 && /[0-9]/.test(p.key) ? 'Digit' + p.key : 'Key' + p.key;
-      if (inp.hit(code)) { b.setGhost(p.t); this.emit('build-select', p.t); }
+      const isDigit = /[0-9]/.test(p.key);
+      if (inp.hit(isDigit ? 'Digit' + p.key : 'Key' + p.key) || (isDigit && inp.hit('Numpad' + p.key))) {
+        // T is chat in a squad room, the bar still selects the tree
+        if (p.key === 'T' && this.mp) continue;
+        b.setGhost(p.t); this.emit('build-select', p.t);
+      }
     }
-    if (inp.hit('KeyR')) b.yaw = (b.yaw + 15) % 360;
-    if (inp.wheel) { if (k.has('AltLeft')) b.scale = THREE.MathUtils.clamp(b.scale - inp.wheel * 0.1, 0.4, 4); else b.lift = THREE.MathUtils.clamp(b.lift - inp.wheel * 0.5, -10, 80); this.emit('build-select', b.selected); }
-    if (inp.hit('KeyZ') && (k.has('ControlLeft') || k.has('MetaLeft'))) b.undoLast();
+    if (inp.hit('KeyR')) { b.yaw = (b.yaw + (k.has('ShiftLeft') || k.has('ShiftRight') ? 345 : 15)) % 360; this.emit('build-select', b.selected); }
+    if (inp.wheel) {
+      const alt = k.has('AltLeft') || k.has('AltRight');
+      if (alt) b.scale = THREE.MathUtils.clamp(b.scale - inp.wheel * 0.1, 0.4, 4);
+      else b.lift = THREE.MathUtils.clamp(b.lift - inp.wheel * 0.5, 0, 80);
+      this.emit('build-select', b.selected);
+    }
+    if (inp.undoPressed) { inp.undoPressed = false; b.undoLast(); audio.tick(); }
     const aim = b.aim(this.camera);
-    this.emit('build-aim', aim.hitPiece);
     const clickPlace = inp.uiClick === 0 || inp.padHit(0);
     const clickDel = inp.uiClick === 1 || inp.hit('KeyX') || inp.hit('Delete') || inp.padHit(1);
     inp.uiClick = -1;
-    if (clickPlace) { b.place({ t: b.selected, x: aim.pos.x, y: aim.pos.y, z: aim.pos.z, r: b.yaw, s: b.scale }); audio.tick(); }
-    if (clickDel && aim.hitPiece >= 0) { b.removeAt(aim.hitPiece); audio.tick(); }
-    if (inp.hit('KeyF') || inp.padHit(3)) { this.saveMap(); this.startFreeFlight(); }
+    if (clickPlace) {
+      // the start flag faces the way you are looking
+      const r = b.selected === 'flag' ? Math.round(THREE.MathUtils.radToDeg(this.freeYaw) / 15) * 15 + b.yaw : b.yaw;
+      if (b.place({ t: b.selected, x: aim.pos.x, y: aim.pos.y, z: aim.pos.z, r, s: b.scale })) audio.tick();
+      else this.toast('That spot is outside the world');
+    }
+    if (clickDel && aim.hitId) { b.removeId(aim.hitId); audio.tick(); }
+    if (inp.hit('KeyF') || inp.padHit(3)) { this.flushAutosave(); this.startFreeFlight(); }
   }
 
   // ------------------------------------------------------------------ camera
@@ -686,13 +904,14 @@ export class Game {
         const up = THREE.MathUtils.degToRad(this.settings.camUptilt ?? this.spec.camUptilt);
         cam.position.copy(v.fpvCam).applyQuaternion(s.quat).add(s.pos);
         cam.quaternion.copy(s.quat).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), up));
+        fov = this.settings.fpvFov;
       } else {
         // stabilised gimbal camera, follows heading, pitch from Q and E
         const e = new THREE.Euler().setFromQuaternion(s.quat, 'YXZ');
         cam.position.copy(v.fpvCam).applyQuaternion(s.quat).add(s.pos);
         cam.quaternion.setFromEuler(new THREE.Euler(THREE.MathUtils.degToRad(this.gimbalPitch), e.y, 0, 'YXZ'));
+        fov = Math.min(this.settings.fpvFov, 100);
       }
-      fov = this.spec.model === 'racer' || s.mode === 'acro' ? this.settings.fpvFov : 78;
       // camera shake from vibration and impacts
       if (s.armed) {
         const sh = 0.0015 * (s.motors[0]?.s ?? 0);
@@ -714,7 +933,7 @@ export class Game {
       const gh = heightAt(want.x, want.z) + 0.6;
       if (want.y < gh) want.y = gh;
       const dir = want.clone().sub(s.pos); const len = dir.length(); dir.normalize();
-      const hit = this.world.colliders.raycast(s.pos.clone().addScaledVector(dir, L * 0.6), dir, len, c => c.tag !== 'tree');
+      const hit = this.world.colliders.raycast(s.pos.clone().addScaledVector(dir, L * 0.6), dir, len, c => c.tag !== 'tree' && c.tag !== 'player');
       if (isFinite(hit.t) && hit.t < len) want.copy(s.pos).addScaledVector(dir, Math.max(L * 0.6, hit.t + L * 0.6 - 0.3));
       const k = 1 - Math.exp(-dt * 5);
       this.camPos.lerp(want, k);
@@ -738,7 +957,8 @@ export class Game {
       alt: s.pos.y, agl: Math.max(0, s.agl), speed: s.speed(), vz: s.vel.y, heading: ((-THREE.MathUtils.radToDeg(s.heading()) % 360) + 360) % 360,
       soc: s.soc, volt: s.voltage, amps: s.current, watts: s.powerW,
       mode: s.mode, armed: s.armed, crashed: s.crashed, crashReason: s.crashReason, sticks: this.input.sticks,
-      wind: Math.hypot(w.x, w.z), windDir: (THREE.MathUtils.radToDeg(Math.atan2(w.x, w.z)) + 360) % 360,
+      // where the wind comes from, as a compass bearing
+      wind: Math.hypot(w.x, w.z), windDir: (THREE.MathUtils.radToDeg(Math.atan2(-w.x, w.z)) + 360) % 360,
       dist: Math.hypot(s.pos.x - this.home.x, s.pos.z - this.home.z), flightTime: this.state === 'mission' ? this.missionTime : this.flightTime,
       tank: this.tank, thermal: this.world.thermal, cam: this.camMode, spraying: this.spraying, gimbal: this.gimbalPitch,
       missionHud: hud, tilt: THREE.MathUtils.radToDeg(Math.hypot(e.x, e.z)), device: this.input.device,

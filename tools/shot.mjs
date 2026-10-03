@@ -26,7 +26,8 @@ if (script) {
 }
 await new Promise(r => setTimeout(r, +wait));
 await page.screenshot({ path: out });
-const fps = await page.evaluate(async () => { const g = window.droneon.game; const f0 = g.renderer.info.render.frame; await new Promise(r => setTimeout(r, 1000)); return g.renderer.info.render.frame - f0; });
+// real frames: the composer renders several passes per frame, so count animation frames instead
+const fps = await page.evaluate(() => new Promise(res => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else res(n); }; requestAnimationFrame(f); }));
 console.log('fps', fps);
 console.log(logs.filter(l => !l.includes('X4122') && !l.includes('toNonIndexed') && !l.includes('PCFSoft')).join('\n'));
 await browser.close();

@@ -24,7 +24,7 @@ export function buildGrass(heightTex: THREE.Texture, count = 90000, radius = 70)
   geo.instanceCount = count;
   const uniforms = {
     uCam: { value: new THREE.Vector3() }, uTime: { value: 0 }, uH: { value: heightTex }, uWorld: { value: WORLD }, uR: { value: radius },
-    uSun: { value: new THREE.Vector3(0.5, 0.8, 0.3) }, uWind: { value: new THREE.Vector2(1, 0) }, uRotor: { value: new THREE.Vector4(0, -999, 0, 0) }, uClear: { value: new THREE.Vector3(0, 0, 0) },
+    uSun: { value: new THREE.Vector3(0.5, 0.8, 0.3) }, uTint: { value: new THREE.Color(1, 1, 1) }, uWind: { value: new THREE.Vector2(1, 0) }, uRotor: { value: new THREE.Vector4(0, -999, 0, 0) }, uClear: { value: new THREE.Vector3(0, 0, 0) },
     fogColor: { value: new THREE.Color() }, fogNear: { value: 1 }, fogFar: { value: 1000 }, fogDensity: { value: 0.0008 },
   };
   const mat = new THREE.ShaderMaterial({
@@ -74,13 +74,13 @@ export function buildGrass(heightTex: THREE.Texture, count = 90000, radius = 70)
     fragmentShader: `
       #include <common>
       #include <fog_pars_fragment>
-      uniform vec3 uSun;
+      uniform vec3 uSun; uniform vec3 uTint;
       varying float vY; varying float vShade; varying float vFade;
       void main(){
         vec3 base = mix(vec3(0.16, 0.27, 0.09), vec3(0.36, 0.52, 0.19), vY);
         base = mix(base, vec3(0.45, 0.48, 0.22), vShade * 0.35 * vY);
         float light = 0.55 + 0.6 * clamp(uSun.y, 0., 1.);
-        gl_FragColor = vec4(base * light, 1.0);
+        gl_FragColor = vec4(base * light * uTint, 1.0);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
         #include <fog_fragment>
