@@ -281,6 +281,45 @@ try {
     console.log('shared link', JSON.stringify(await page.evaluate(() => ({ state: window.droneon.game.state, origin: window.droneon.game.builder.origin, pieces: window.droneon.game.builder.map.pieces.length }))));
     await shot('shared');
   }
+  if (STEPS.includes('expert')) {
+    // parts to EXPERT NUMBERS: change a raw value, save, the hangar marks it EXPERT TUNED and offers a rebuild
+    await page.evaluate(() => window.droneon.game.enterMenu());
+    await sleep(600);
+    await page.evaluate(() => window.droneon.ui.closeSheets());
+    await sleep(300);
+    await tap('[data-go=hangar]');
+    await tap('.ws-entry', { after: 800 });
+    await page.$eval('#ws-name', e => { e.value = 'Tuned One'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+    await tap('[data-save=hangar]', { after: 1200 });
+    const badge1 = await page.evaluate(() => [...document.querySelectorAll('[data-sheet=hangar] .drone-row')].map(r => r.querySelector('h3')?.textContent?.replace(/\s+/g, ' ').trim()).filter(t => /Tuned One/.test(t)));
+    console.log('after parts save', JSON.stringify(badge1));
+    // Edit on a parts drone opens the parts builder again
+    const row = await page.evaluateHandle(() => [...document.querySelectorAll('[data-sheet=hangar] .drone-row')].find(r => /Tuned One/.test(r.textContent)));
+    await tap(await row.asElement().$('[aria-label=Edit]'), { after: 700 });
+    console.log('edit opens', await page.evaluate(() => Object.entries(window.droneon.ui.sheets).find(([, s]) => s.classList.contains('open'))?.[0]));
+    await tap('[data-expert]', { after: 900 });
+    console.log('expert opens', await page.evaluate(() => Object.entries(window.droneon.ui.sheets).find(([, s]) => s.classList.contains('open'))?.[0]));
+    await shot('expert-editor');
+    await page.$eval('#f-maxTilt', e => { e.value = '62'; e.dispatchEvent(new Event('input', { bubbles: true })); });
+    await tap('[data-sheet=editor] .save', { after: 1500 });
+    const badge2 = await page.evaluate(() => { const r = [...document.querySelectorAll('[data-sheet=hangar] .drone-row')].find(r => /Tuned One/.test(r.textContent)); return { badge: r?.querySelector('.ws-badge')?.textContent, actions: [...(r?.querySelectorAll('.acts button') ?? [])].map(b => b.getAttribute('aria-label')) }; });
+    console.log('after expert save', JSON.stringify(badge2));
+    await page.evaluate(() => { const r = [...document.querySelectorAll('[data-sheet=hangar] .drone-row')].find(r => /Tuned One/.test(r.textContent)); r?.scrollIntoView({ block: 'center' }); });
+    await sleep(300);
+    await shot('expert-hangar');
+    // instant restart in flight: R puts a drill back to its start at once
+    await openAcademy();
+    if (!(await page.$eval('[data-drill=slalom]', e => e.classList.contains('open')))) await tap('[data-drill=slalom] .ac-head');
+    await tap('[data-drill=slalom] .start', { after: 900 });
+    await page.evaluate(() => window.__ap.fly('slalom'));
+    await sleep(6000);
+    const before = await page.evaluate(() => ({ z: window.droneon.game.sim.pos.z.toFixed(1), t: window.droneon.game.mission.hud() }));
+    await page.evaluate(() => window.__ap.stop());
+    const t0 = Date.now();
+    await page.keyboard.press('KeyR');
+    await page.waitForFunction(() => window.droneon.game.state === 'mission' && Math.abs(window.droneon.game.sim.pos.z) < 1, { timeout: 5000 });
+    console.log('R in flight', JSON.stringify(before), '->', JSON.stringify(await page.evaluate(() => ({ z: window.droneon.game.sim.pos.z.toFixed(1), t: window.droneon.game.mission.hud(), id: window.droneon.game.mission.id }))), `${Date.now() - t0} ms`);
+  }
   if (STEPS.includes('sheets')) {
     await page.evaluate(() => window.droneon.game.enterMenu());
     await sleep(700);
