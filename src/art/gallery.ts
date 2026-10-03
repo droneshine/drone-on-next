@@ -81,6 +81,7 @@ class Gallery {
   private t = 0;
   private freezeAt = -1;
   private fov = 0;
+  private cpuArt = 0; private cpuSim = 0; private cpuN = 0;
   private panel: HTMLElement;
   private labelLayer: HTMLElement;
   private statsEl: HTMLElement;
@@ -109,6 +110,18 @@ class Gallery {
     this.buildPanel();
     document.body.append(this.labelLayer, this.panel);
     game.on('frame', (dt) => this.frame(dt as number));
+    // GPU cost of the art, independent of vsync: render n frames back to back, wait for the GPU,
+    // once with everything and once with the gallery drones and all Royale art hidden
+    (window as unknown as { __artBench: unknown }).__artBench = (n = 20) => {
+      const gl = game.renderer.getContext();
+      const run = () => { gl.finish(); const t0 = performance.now(); for (let i = 0; i < n; i++) game.composer.render(0.016); gl.finish(); return (performance.now() - t0) / n; };
+      run();
+      const show = (on: boolean) => { this.group.visible = on; this.art.group.visible = on; };
+      // alternate five times and keep the best of each: robust against other work on the GPU
+      let f = Infinity, w = Infinity;
+      for (let i = 0; i < 5; i++) { f = Math.min(f, run()); show(false); w = Math.min(w, run()); show(true); }
+      return { fullMs: +f.toFixed(2), worldOnlyMs: +w.toFixed(2), artMs: +(f - w).toFixed(2) };
+    };
     addEventListener('hashchange', () => this.apply());
     this.apply();
   }
@@ -469,15 +482,25 @@ class Gallery {
     });
   }
 
+  /** the screen overlays: cycle all, or hold one with &fx=static|low|dmg|scramble|flash for review */
   private screenDemo() {
     const s = this.art.screen;
+    const only = params().fx;
     this.loops.push((dt, t) => {
+      if (only) {
+        s.staticAmount(only === 'static' ? 0.6 + 0.4 * Math.sin(t * 0.5) ** 2 : 0);
+        s.lowIntegrity(only === 'low' || only === 'dmg');
+        s.scrambled(only === 'scramble');
+        if (only === 'dmg' && crossed(t, dt, 0.3, 0)) s.damageFrom(Math.random() * Math.PI * 2, 10 + Math.random() * 20);
+        if (only === 'flash' && crossed(t, dt, 1.2, 0)) s.evolveFlash('bolt');
+        return;
+      }
       const ph = t % 10;
       s.staticAmount(ph < 2.5 ? Math.min(1, ph / 1.5) : 0);
       s.lowIntegrity(ph > 2.5 && ph < 5);
-      if (ph > 2.6 && ph < 5 && Math.floor(t / 0.45) !== Math.floor((t - dt) / 0.45)) s.damageFrom(Math.random() * Math.PI * 2, 10 + Math.random() * 20);
+      if (ph > 2.6 && ph < 5 && crossed(t, dt, 0.45, 0)) s.damageFrom(Math.random() * Math.PI * 2, 10 + Math.random() * 20);
       s.scrambled(ph > 5.2 && ph < 7.4);
-      if (ph >= 8 && ph - dt < 8) s.evolveFlash('bolt');
+      if (crossed(t, dt, 10, 8)) s.evolveFlash('bolt');
     });
   }
 
@@ -488,14 +511,17 @@ class Gallery {
     const area = n === 12 ? 45 : 110;
     for (let i = 0; i < n; i++) {
       const t = mix[i];
-      const c = new THREE.Vector3((Math.random() - 0.5) * area * 2, 0, -area * 0.6 + (Math.random() - 0.5) * area * 1.6);
+      // a third of the field fights close to the camera, the rest spreads over the arena
+      const close = i % 3 === 0;
+      const c = close ? new THREE.Vector3((Math.random() - 0.5) * 50, 0, -10 + (Math.random() - 0.5) * 40)
+        : new THREE.Vector3((Math.random() - 0.5) * area * 2, 0, -area * 0.6 + (Math.random() - 0.5) * area * 1.6);
       const h = heightAt(c.x, c.z) + 6 + Math.random() * 18;
       const p = await this.pilot(t, new THREE.Vector3(c.x, h, c.z), 0, 'p' + i);
       p.c.set(c.x, h, c.z); p.r = 4 + Math.random() * 14; p.w = (Math.random() < 0.5 ? -1 : 1) * (0.25 + Math.random() * 0.4); p.ph = Math.random() * 6.28; p.h = h;
       p.jet = i % 9 === 0 && t !== 'spark';
     }
-    this.look(new THREE.Vector3(0, 34, 70), new THREE.Vector3(0, 8, -40));
-    this.focus.set(0, 0, -20);
+    this.look(new THREE.Vector3(0, 21, 34), new THREE.Vector3(0, 9, -30));
+    this.focus.set(0, 0, -10);
     const tmp = new THREE.Vector3(), q = new THREE.Quaternion();
     this.loops.push((dt, t) => {
       for (const p of this.pilots) {
@@ -540,6 +566,7 @@ class Gallery {
     // &at=<s> freezes every effect at that moment of its 2.4 s cycle, for clean review shots
     if (this.freezeAt >= 0 && this.t >= this.freezeAt) dt = 0;
     this.t += dt;
+    const c0 = performance.now();
     if (dt > 0) for (const l of this.loops) l(dt, this.t);
     // bolts in flight
     for (let i = this.bolts.length - 1; i >= 0; i--) {
@@ -552,7 +579,9 @@ class Gallery {
       } else this.art.moveBolt(b.h, b.p);
     }
     for (const c of this.cacheObjs) c.update(dt);
+    const c1 = performance.now();
     this.art.update(dt, g.camera);
+    this.cpuArt += performance.now() - c1; this.cpuSim += c1 - c0; this.cpuN++;
     // camera for the next frame (free camera mode reads camPos, yaw and pitch)
     const gg = g as unknown as { camPos: THREE.Vector3 };
     g.camMode = 'free';
@@ -573,7 +602,10 @@ class Gallery {
     if (!slow) return;
     const st = this.art.stats();
     let dtris = 0; for (const p of this.pilots) dtris += triangles(p.v.root);
+    const lod = [st.crowd.near, st.crowd.mid, st.crowd.far];
+    const artMs = this.cpuArt / Math.max(1, this.cpuN), simMs = this.cpuSim / Math.max(1, this.cpuN);
+    this.cpuArt = this.cpuSim = this.cpuN = 0;
     this.statsEl.textContent = `FPS ${this.fps.toFixed(0)}\nDRAW CALLS ${this.calls}\nTRIANGLES ${(this.tris / 1000).toFixed(0)} K\nDRONES ${this.pilots.length}\nBOLTS ${st.bolts}\nSPARKS ${st.sparks}  PUFFS ${st.puffs}`;
-    (window as unknown as { __art: unknown }).__art = { fps: this.fps, calls: this.calls, tris: this.tris, drones: this.pilots.length, droneTrisAllLevels: dtris, ...st };
+    (window as unknown as { __art: unknown }).__art = { fps: +this.fps.toFixed(1), calls: this.calls, tris: this.tris, drones: this.pilots.length, lodNearMidFar: lod, artCpuMs: +artMs.toFixed(2), galleryCpuMs: +simMs.toFixed(2), ...st };
   }
 }

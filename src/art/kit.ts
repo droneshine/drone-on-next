@@ -64,14 +64,20 @@ export function rod(a: THREE.Vector3, b: THREE.Vector3, r: number, seg = 8, r2 =
   return g;
 }
 
-export interface Finish { color: string | THREE.Color; rough?: number; metal?: number; /** self light, multiplies the vertex colour */ emit?: number; }
+export interface Finish {
+  color: string | THREE.Color; rough?: number; metal?: number;
+  /** self light, multiplies the vertex colour */ emit?: number;
+  /** thermal camera temperature 0..1 (defaults to the part set's) */ temp?: number;
+}
 
 /**
  * Collects static parts and merges them into ONE geometry with vertex colour plus per vertex
- * roughness, metalness and emission (attribute aRME). One mesh, one draw call, several finishes.
+ * roughness, metalness, emission and thermal temperature (attribute aRMET). One mesh, one draw
+ * call, several finishes, and a thermal image with hot motors and a cold water tank.
  */
 export class PartSet {
   private geos: THREE.BufferGeometry[] = [];
+  constructor(private temp = 0.7) {}
 
   add(geo: THREE.BufferGeometry, f: Finish) {
     let g = geo.index ? geo.toNonIndexed() : geo;
@@ -80,13 +86,13 @@ export class PartSet {
     if (!g.attributes.normal) g.computeVertexNormals();
     const n = g.attributes.position.count;
     const c = f.color instanceof THREE.Color ? f.color : new THREE.Color(f.color);
-    const col = new Float32Array(n * 3), rm = new Float32Array(n * 3);
+    const col = new Float32Array(n * 3), rm = new Float32Array(n * 4);
     for (let i = 0; i < n; i++) {
       col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
-      rm[i * 3] = f.rough ?? 0.5; rm[i * 3 + 1] = f.metal ?? 0.1; rm[i * 3 + 2] = f.emit ?? 0;
+      rm[i * 4] = f.rough ?? 0.5; rm[i * 4 + 1] = f.metal ?? 0.1; rm[i * 4 + 2] = f.emit ?? 0; rm[i * 4 + 3] = f.temp ?? this.temp;
     }
     g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    g.setAttribute('aRME', new THREE.BufferAttribute(rm, 3));
+    g.setAttribute('aRMET', new THREE.BufferAttribute(rm, 4));
     this.geos.push(g);
     return this;
   }
@@ -110,21 +116,24 @@ export function mergeBuilt(geos: THREE.BufferGeometry[]) {
 }
 
 /**
- * The tier body material: one MeshStandardMaterial that reads colour, roughness, metalness and
- * self light per vertex. Every tier drone shares the compiled program (same cache key), each drone owns its
+ * The tier body material: one MeshStandardMaterial that reads colour, roughness, metalness, self
+ * light and thermal temperature per vertex. In the thermal view it draws its own ironbow image (the
+ * meshes opt out of the world's material swap with userData.thermalSelf). Every tier drone shares the compiled program (same cache key), each drone owns its
  * instance so the evolve glow can light one drone without touching the others.
  */
 export function tierBodyMaterial() {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, metalness: 1 });
   m.onBeforeCompile = (sh) => {
+    sh.uniforms.uThermal = shared.thermal;
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 aRME;\nvarying vec3 vRME;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRME = aRME;');
+      .replace('#include <common>', '#include <common>\nattribute vec4 aRMET;\nvarying vec4 vRMET;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRMET = aRMET;');
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vRME;')
-      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vRME.x;')
-      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = vRME.y;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vColor.rgb * vRME.z;');
+      .replace('#include <common>', '#include <common>\nvarying vec4 vRMET;\nuniform float uThermal;\n' + GLSL_IRONBOW)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = vRMET.x;')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = vRMET.y;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vColor.rgb * vRMET.z;')
+      .replace('#include <dithering_fragment>', '#include <dithering_fragment>\nif (uThermal > 0.5) gl_FragColor.rgb = ironbow(vRMET.w);');
   };
   m.customProgramCacheKey = () => 'droneon-tier-body';
   m.userData.tierPaint = true;

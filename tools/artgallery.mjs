@@ -8,7 +8,7 @@ import path from 'path';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf('--' + k); if (i < 0) return d; const v = args[i + 1]; args.splice(i, 2); return v; };
-const W = +opt('w', 1440), H = +opt('h', 900), WAIT = +opt('wait', 2500), HUD = opt('hud', '0');
+const W = +opt('w', 1440), H = +opt('h', 900), WAIT = +opt('wait', 2500), HUD = opt('hud', '0'), BENCH = opt('bench', '0') === '1';
 const [base, outDir, ...views] = args;
 fs.mkdirSync(outDir, { recursive: true });
 const browser = await puppeteer.launch({
@@ -37,7 +37,8 @@ for (const v of views) {
   await page.screenshot({ path: file });
   const fps = await page.evaluate(() => new Promise(res => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else res(n); }; requestAnimationFrame(f); }));
   const st = await page.evaluate(() => window.__art);
-  console.log(file, 'fps', fps, JSON.stringify(st));
+  const bench = BENCH ? await page.evaluate(() => window.__artBench(20)) : null;
+  console.log(file, 'fps', fps, JSON.stringify(st), bench ? 'bench ' + JSON.stringify(bench) : '');
 }
 const bad = logs.filter(l => !l.includes('X4122') && !l.includes('X3577') && !l.includes('toNonIndexed') && !l.includes('PCFSoft'));
 console.log(bad.length ? bad.join('\n') : 'console clean');

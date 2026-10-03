@@ -12,10 +12,10 @@ const CSS = `
 .dfx{position:fixed;inset:0;pointer-events:none;z-index:1;overflow:hidden;contain:strict}
 .dfx>div{position:absolute;inset:0}
 .dfx-static{opacity:0;transition:opacity 180ms linear;-webkit-mask-image:radial-gradient(ellipse at center,transparent var(--clear,58%),#000 100%);mask-image:radial-gradient(ellipse at center,transparent var(--clear,58%),#000 100%)}
-.dfx-noise{position:absolute;inset:-60%;background-image:var(--noise),repeating-linear-gradient(0deg,rgba(181,247,138,.16) 0 1px,transparent 1px 4px);background-size:192px 192px,auto;animation:dfx-jit .42s steps(1) infinite;will-change:transform}
+.dfx-noise{position:absolute;inset:-60%;background-image:var(--noise),repeating-linear-gradient(0deg,rgba(181,247,138,.16) 0 1px,transparent 1px 4px);background-size:288px 288px,auto;image-rendering:pixelated;animation:dfx-jit .42s steps(1) infinite;will-change:transform}
 .dfx-static .dfx-noise{opacity:.9}
 @keyframes dfx-jit{0%{transform:translate(0,0)}14%{transform:translate(-9%,6%)}28%{transform:translate(7%,-11%)}42%{transform:translate(-13%,-4%)}57%{transform:translate(11%,9%)}71%{transform:translate(-4%,13%)}85%{transform:translate(5%,-6%)}}
-.dfx-tint{background:radial-gradient(ellipse at center,transparent 50%,rgba(0,37,24,.55) 100%)}
+.dfx-tint{background:radial-gradient(ellipse at center,transparent 45%,rgba(0,37,24,.5) 82%,rgba(0,66,37,.75) 100%)}
 .dfx-dmg svg{position:absolute;left:50%;top:50%;width:min(86vw,86vh);height:min(86vw,86vh);margin:calc(min(86vw,86vh)/-2) 0 0 calc(min(86vw,86vh)/-2);opacity:0;overflow:visible}
 .dfx-flash{opacity:0;background:radial-gradient(ellipse at center,rgba(181,247,138,.10) 0%,rgba(181,247,138,.16) 45%,var(--edge,rgba(181,247,138,.62)) 100%)}
 .dfx-scr{opacity:0;transition:opacity 220ms ease-out}
@@ -26,9 +26,9 @@ const CSS = `
 @keyframes dfx-tear{0%{transform:translate(0,12vh)}20%{transform:translate(-3%,63vh)}40%{transform:translate(2%,31vh)}60%{transform:translate(-1%,82vh)}80%{transform:translate(3%,47vh)}}
 .dfx-roll{position:absolute;left:0;right:0;height:26vh;top:-26vh;background:linear-gradient(180deg,transparent,rgba(181,247,138,.07) 60%,rgba(247,247,242,.12) 96%,transparent);animation:dfx-roll 1.6s linear infinite}
 @keyframes dfx-roll{to{transform:translateY(126vh)}}
-.dfx-low{opacity:0;transition:opacity 300ms ease-out;box-shadow:inset 0 0 18vmin 3vmin rgba(255,107,90,.42),inset 0 0 0 1px rgba(255,107,90,.35)}
+.dfx-low{opacity:0;transition:opacity 300ms ease-out;box-shadow:inset 0 0 16vmin 2vmin rgba(255,107,90,.62),inset 0 0 0 2px rgba(255,107,90,.55)}
 .dfx-low.on{animation:dfx-beat 1.1s cubic-bezier(.23,1,.32,1) infinite}
-@keyframes dfx-beat{0%{opacity:.35}12%{opacity:.95}26%{opacity:.5}38%{opacity:.85}70%,100%{opacity:.35}}
+@keyframes dfx-beat{0%{opacity:.45}12%{opacity:1}26%{opacity:.6}38%{opacity:.92}70%,100%{opacity:.45}}
 @media (prefers-reduced-motion: reduce){
   .dfx-noise,.dfx-tear,.dfx-roll{animation:none}
   .dfx-low.on{animation:none;opacity:.6}
@@ -42,10 +42,10 @@ const TIER_EDGE: Record<TierId, string> = {
 let noiseUrl = '';
 function noise() {
   if (noiseUrl) return noiseUrl;
-  const c = document.createElement('canvas'); c.width = c.height = 192;
+    const c = document.createElement('canvas'); c.width = c.height = 96;
   const g = c.getContext('2d')!;
-  const img = g.createImageData(192, 192);
-  for (let i = 0; i < 192 * 192; i++) {
+  const img = g.createImageData(96, 96);
+  for (let i = 0; i < 96 * 96; i++) {
     const v = Math.random();
     const k = i * 4;
     const hot = v > 0.86;
@@ -54,7 +54,7 @@ function noise() {
   }
   g.putImageData(img, 0, 0);
   // a few horizontal dropouts so it reads as signal static, not film grain
-  for (let i = 0; i < 9; i++) { g.fillStyle = `rgba(181,247,138,${0.08 + Math.random() * 0.14})`; g.fillRect(0, Math.random() * 192, 192, 1 + Math.random() * 2); }
+  for (let i = 0; i < 7; i++) { g.fillStyle = `rgba(181,247,138,${0.08 + Math.random() * 0.14})`; g.fillRect(0, Math.floor(Math.random() * 96), 96, 1); }
   noiseUrl = `url(${c.toDataURL()})`;
   return noiseUrl;
 }
@@ -95,7 +95,9 @@ export class ScreenImpl implements ScreenFx {
       const a = 22 * Math.PI / 180, r = 46;
       const x0 = -Math.sin(a) * r, y0 = -Math.cos(a) * r, x1 = Math.sin(a) * r;
       const d = `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 0 1 ${x1.toFixed(2)} ${y0.toFixed(2)}`;
-      svg.innerHTML = `<path d="${d}" fill="none" stroke="rgba(247,247,242,.22)" stroke-width="4.5" stroke-linecap="round"/>`
+      // a dark under stroke keeps the Off White arc readable over sky, apron and snow bright glare
+      svg.innerHTML = `<path d="${d}" fill="none" stroke="rgba(0,37,24,.42)" stroke-width="3.6" stroke-linecap="round"/>`
+        + `<path d="${d}" fill="none" stroke="rgba(247,247,242,.25)" stroke-width="5.5" stroke-linecap="round"/>`
         + `<path d="${d}" fill="none" stroke="#f7f7f2" stroke-width="1.1" stroke-linecap="round"/>`;
       this.dmg.append(svg);
       this.arcs.push(svg);

@@ -198,7 +198,7 @@ const BEAM_VERT = /* glsl */`
 varying float vY; varying vec3 vN; varying vec3 vWP;
 void main(){ vY = uv.y; vec4 w = modelMatrix * vec4(position, 1.0); vWP = w.xyz; vN = normalize(mat3(modelMatrix) * normal); gl_Position = projectionMatrix * viewMatrix * w; }`;
 const BEAM_FRAG = /* glsl */`
-uniform vec3 uColor; uniform float uTime; uniform float uOn;
+uniform vec3 uColor; uniform float uTime; uniform float uOn; uniform float uThermal;
 varying float vY; varying vec3 vN; varying vec3 vWP;
 void main(){
   vec3 V = normalize(cameraPosition - vWP);
@@ -206,7 +206,8 @@ void main(){
   float fade = pow(1.0 - vY, 1.6);
   float pulse = smoothstep(0.08, 0.0, abs(fract(vY * 3.0 - uTime * 0.6) - 0.5) - 0.42);
   float a = (core * 0.32 + pulse * 0.28) * fade * uOn;
-  gl_FragColor = vec4(uColor * a * 1.6, 1.0);
+  vec3 c = uThermal > 0.5 ? vec3(1.0, 0.85, 0.55) : uColor;
+  gl_FragColor = vec4(c * a * 1.6, 1.0);
 }`;
 
 export interface RingEntry { vis: RingImpl; }
@@ -273,7 +274,7 @@ export class RingImpl implements RingVisual {
       g.translate(0, 23, 0);
       const m = new THREE.ShaderMaterial({
         vertexShader: BEAM_VERT, fragmentShader: BEAM_FRAG,
-        uniforms: { uColor: { value: new THREE.Color(KIND_COLOR[this.kind]) }, uTime: shared.time, uOn: { value: 0 } },
+        uniforms: { uColor: { value: new THREE.Color(KIND_COLOR[this.kind]) }, uTime: shared.time, uOn: { value: 0 }, uThermal: shared.thermal },
         transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
       });
       this.beam = new THREE.Mesh(g, m);

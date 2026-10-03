@@ -7,6 +7,7 @@ import { BoltPool } from './bolts';
 import { Effects } from './fx';
 import { ScreenImpl } from './screen';
 import { Beacons } from './beacons';
+import { Crowd } from './crowd';
 
 // The real Royale look behind createRoyaleArt (src/art/index.ts). One group in the scene holds
 // every art object; update() advances the shared clock once per frame and drives everything.
@@ -21,6 +22,7 @@ export class RoyaleArtImpl implements RoyaleArt {
   private bolts: BoltPool;
   readonly fx: Effects;
   private beacons: Beacons;
+  private crowd: Crowd;
   private colors = new Map<string, THREE.Color>();
   private disposed = false;
 
@@ -32,6 +34,7 @@ export class RoyaleArtImpl implements RoyaleArt {
     this.group.add(this.bolts.mesh);
     this.fx = new Effects(this.group);
     this.beacons = new Beacons(this.group);
+    this.crowd = new Crowd(this.group);
     this.screen = new ScreenImpl();
   }
 
@@ -100,11 +103,12 @@ export class RoyaleArtImpl implements RoyaleArt {
     for (const s of this.signals) s.update(dt, camera);
     this.bolts.update();
     this.fx.update(dt, camera);
+    this.crowd.update(camera, this.scene);
     this.beacons.update(this.scene);
   }
 
   /** live numbers for the gallery and the performance budget */
-  stats() { return { bolts: this.bolts.count, rings: this.rings.size, ...this.fx.stats() }; }
+  stats() { return { bolts: this.bolts.count, rings: this.rings.size, crowd: this.crowd.stats(), ...this.fx.stats() }; }
 
   dispose() {
     if (this.disposed) return;
@@ -115,6 +119,7 @@ export class RoyaleArtImpl implements RoyaleArt {
     this.bolts.dispose();
     this.fx.dispose();
     this.beacons.dispose();
+    this.crowd.dispose();
     this.screen.dispose();
     this.group.removeFromParent();
   }

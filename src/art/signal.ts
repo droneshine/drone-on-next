@@ -37,28 +37,32 @@ float lineAA(float coord, float period, float halfW){
 void main(){
   float d = distance(vWP, cameraPosition);
   float outside = gl_FrontFacing ? 1.0 : 0.0;
+  // GDD 6.7: the wall reads at 0.15 far away and 0.6 within 30 m (peak line opacity)
   float base = mix(0.6, 0.15, smoothstep(30.0, 140.0, d));
   float y = vWP.y;
-  float scan = lineAA(y - uTime * 0.7, 2.0, 0.05);
-  float fine = lineAA(y + uTime * 0.25, 0.5, 0.012);
-  float rib = lineAA(vArc, 8.0, 0.03);
-  // static: sparse blocks that flicker at 15 fps, denser on the Static side
+  // a curtain of light rising from the ground line: strong low, thinning toward the ceiling
+  float rise = mix(1.0, 0.4, smoothstep(0.0, 70.0, vH));
+  float scan = lineAA(y - uTime * 0.7, 2.0, 0.035);
+  float fine = lineAA(y + uTime * 0.25, 0.5, 0.008);
+  float rib = lineAA(vArc, 12.0, 0.02);
+  // static: rare short dashes that flicker at 15 fps, much denser on the Static side
   float fwA = fwidth(vArc) + fwidth(y);
   float step15 = floor(uTime * 15.0);
-  float n = h21(floor(vec2(vArc * 1.6, y * 3.2)) + vec2(step15 * 1.7, step15 * 3.1));
-  float grain = step(mix(0.955, 0.86, outside), n) * (1.0 - smoothstep(0.4, 1.6, fwA));
+  vec2 cell = floor(vec2(vArc * 2.4, y * 6.0));
+  float n = h21(cell + vec2(step15 * 1.7, step15 * 3.1));
+  float grain = step(mix(0.988, 0.9, outside), n) * (1.0 - smoothstep(0.3, 1.2, fwA));
   float band = exp(-pow((y - mod(uTime * 9.0, 140.0) + 10.0) / 2.5, 2.0));
-  float a = base * (0.22 + scan * 0.55 + fine * 0.18 + rib * 0.22 + grain * 0.75 + band * 0.45 + outside * 0.08);
-  // ground line: hard bright core that blooms, soft glow above it
+  float a = base * rise * (0.08 + scan * 0.62 + fine * 0.14 + rib * 0.2 + grain * 0.7 + band * 0.35 + outside * 0.1);
+  // ground line: a hard bright core that blooms, a soft glow just above it
   float h = vH - 0.05;
-  float core = smoothstep(0.22, 0.0, abs(h)) ;
-  float glow = exp(-max(h, 0.0) * 1.3) * step(-0.1, h);
+  float core = smoothstep(0.22, 0.0, abs(h));
+  float glow = exp(-max(h, 0.0) * 1.1) * step(-0.1, h);
   float top = smoothstep(0.35, 0.0, abs(vTop - 0.5)) * 0.8;
   vec3 col = uColor;
   if (uThermal > 0.5) col = vec3(0.85, 0.95, 1.0);
-  vec3 add = col * (core * 9.0 + glow * 0.9 + top * 2.0);
+  vec3 add = col * (core * 9.0 + glow * 1.1 + top * 2.0);
   a = clamp(a, 0.0, 0.85);
-  if (vH < -0.25) { a *= 0.0; add *= 0.0; }
+  if (vH < -0.25) { a = 0.0; add *= 0.0; }
   gl_FragColor = vec4(col * a * 1.25 + add, a);
 }`;
 
@@ -80,6 +84,7 @@ float grid(vec2 p, float period, float halfW){
 void main(){
   float gap = uCeil - cameraPosition.y;
   float show = 1.0 - smoothstep(0.0, 10.0, gap);
+  show = sqrt(show);
   float dc = distance(vWP.xz, cameraPosition.xz);
   float local = 1.0 - smoothstep(18.0, 75.0, dc);
   float a = show * local;
@@ -87,7 +92,7 @@ void main(){
   float g = grid(vWP.xz + vec2(0.0, uTime * 0.6), 4.0, 0.05);
   float step15 = floor(uTime * 15.0);
   float n = h21(floor(vWP.xz * 1.5) + vec2(step15 * 1.3, step15 * 2.9));
-  float alpha = a * (0.12 + g * 0.5 + step(0.9, n) * 0.5 + n * 0.08);
+  float alpha = a * (0.1 + g * 0.65 + step(0.93, n) * 0.45 + n * 0.06);
   gl_FragColor = vec4(uColor * alpha * 1.3, alpha);
 }`;
 
