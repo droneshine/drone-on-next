@@ -1,9 +1,11 @@
 /* Workshop parts builder (src/workshop). Extends the sheet language of src/ui/style.css: hairlines, Audiowide numbers. */
-.ws-stats { position: sticky; top: -4px; z-index: 1; background: #001c12; margin: 0 0 4px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 22px; padding: 16px 0 14px; }
+/* numbers and messages stay in view while the parts scroll under them; full bleed so it reads as the sheet, not a box */
+.ws-top { position: sticky; top: -4px; z-index: 1; margin: 0 calc(-1 * clamp(20px, 4vw, 44px)) 6px; padding: 0 clamp(20px, 4vw, 44px); background: rgba(0, 28, 18, 0.985); border-bottom: 1px solid var(--hair); }
+.ws-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 22px; padding: 16px 0 14px; }
 .ws-stats .fact { text-align: left; min-width: 0; }
 .ws-stats .fact b { font-size: 24px; overflow-wrap: anywhere; }
 .ws-stats .fact.like b { color: var(--lg); }
-.ws-msg { display: grid; gap: 4px; margin: 2px 0 10px; }
+.ws-msg { display: grid; gap: 4px; margin: -4px 0 12px; }
 .ws-msg p { color: var(--warn); font-weight: 600; font-size: 13px; letter-spacing: 0.03em; line-height: 1.45; }
 .ws-opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 8px; }
 .ws-opts.props { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
@@ -40,6 +42,7 @@
 .ws-paints + .ws-acts { margin-top: 26px; }
 [data-sheet=workshop] .toggle .help { font-size: 12.5px; }
 @media (max-width: 760px) {
+  .ws-top { margin: 0 -16px 6px; padding: 0 16px; }
   .ws-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; padding: 12px 0 10px; }
   .ws-stats .fact b { font-size: 19px; }
   .ws-opts { grid-template-columns: repeat(2, minmax(0, 1fr)); }

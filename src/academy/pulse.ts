@@ -10,7 +10,9 @@ export const PULSE = { rate: 4, speed: 110, range: 60, cost: 0.0018, minSoc: 0.0
 const VERTICAL_HELP = THREE.MathUtils.degToRad(12);
 const VERTICAL_MAX = THREE.MathUtils.degToRad(40);
 const LOCK_DELAY = 0.15;
-const HIT_R = 0.85;
+const HIT_R = 1.1;
+/** targets read at 50 m: half again the size of a Spark */
+const TARGET_SCALE = 1.5;
 
 export interface Target {
   base: THREE.Vector3; pos: THREE.Vector3; vel: THREE.Vector3;
@@ -42,7 +44,7 @@ export class PulseRange {
   private mat = {
     body: new THREE.MeshStandardMaterial({ color: '#f7f7f2', roughness: 0.45, metalness: 0.1 }),
     arm: new THREE.MeshStandardMaterial({ color: '#1c1e1d', roughness: 0.5 }),
-    rotor: new THREE.MeshStandardMaterial({ color: '#8fc2f5', emissive: '#8fc2f5', emissiveIntensity: 1.6 }),
+    rotor: new THREE.MeshStandardMaterial({ color: '#8fc2f5', emissive: '#8fc2f5', emissiveIntensity: 3 }),
     eye: new THREE.MeshBasicMaterial({ color: new THREE.Color('#8fc2f5').multiplyScalar(6) }),
     // bright enough to bloom: the bolt reads as energy, not as a solid
     bolt: new THREE.MeshBasicMaterial({ color: new THREE.Color('#b5f78a').multiplyScalar(10) }),
@@ -70,6 +72,7 @@ export class PulseRange {
     const eye = new THREE.Mesh(this.geo.eye, this.mat.eye); eye.position.set(0, 0, -0.24); g.add(eye);
     g.traverse(o => { (o as THREE.Mesh).castShadow = true; o.userData.noThermal = true; });
     g.position.copy(pos);
+    g.scale.setScalar(TARGET_SCALE);
     this.root.add(g);
     this.targets.push({
       base: pos.clone(), pos: pos.clone(), vel: new THREE.Vector3(), axis: rail?.axis.clone().normalize() ?? null, amp: rail?.amp ?? 0,
@@ -97,7 +100,7 @@ export class PulseRange {
       if (!t.alive) {
         t.pop = Math.min(1, t.pop + dt / 0.16);
         const s = 1 - t.pop;
-        t.obj.scale.setScalar(Math.max(0.001, s));
+        t.obj.scale.setScalar(Math.max(0.001, s) * TARGET_SCALE);
         t.obj.visible = s > 0.01;
       }
     }

@@ -67,6 +67,8 @@ interface Impl {
   value(): number;
   detail(): string;
   failReason?: string;
+  /** read only state for the headless QA autopilot (tools/qa-autopilot.js) */
+  probe?(): unknown;
 }
 
 const t2 = (s: number) => s.toFixed(1);
@@ -79,7 +81,8 @@ function chase(def: DrillDef, v: number) {
 function wrap(id: DrillId, g: Game, end: DrillEnd, impl: Impl): Mission {
   const def = drillDef(id)!;
   let stage: Stage | null = null;
-  const m: Mission = {
+  const m: Mission & { probe?: () => unknown } = {
+    probe: () => impl.probe?.(),
     id: 'drill-' + id, title: def.title, skill: def.skill, brief: def.brief, drone: impl.drone,
     spec: impl.spec, lockMode: impl.lockMode, wind: impl.wind,
     spawn: w => impl.spawn(w),
@@ -133,7 +136,7 @@ function hoverLock(): Impl {
       if (crashed(impl, ctx)) return 'fail';
       dist = ctx.sim.pos.distanceTo(centre);
       const inside = dist <= R;
-      shell.opacity = inside ? 0.16 : 0.08;
+      shell.opacity = inside ? 0.09 : 0.06;
       shell.color.set(inside ? LG : OFF);
       if (phase === 'climb' && inside) { phase = 'hold'; objs[0].done = true; ctx.chime(2); }
       if (phase === 'hold') {
@@ -147,15 +150,17 @@ function hoverLock(): Impl {
     objectives: () => objs,
     hud: () => phase === 'climb' ? `CLIMB INTO THE SPHERE   ${Math.round(dist * 100)} CM` : `${Math.round(dist * 100)} CM   AVG ${Math.round(sum / Math.max(0.01, held) * 100)}   ${t2(Math.max(0, HOLD - held))} S LEFT`,
     value: () => Math.round(sum / Math.max(0.01, held) * 1000) / 10,
+    probe: () => ({ centre, dist, held, phase }),
     detail: () => `Average distance from the centre over ${HOLD} s, Angle mode, wind 4 m/s with gusts`,
   };
   return impl;
 }
 
 // ------------------------------------------------------------------ RING SPRINT (speed)
+// about 400 m: GPS gets round near Bronze, Angle near Silver, clean Acro lines reach Shine
 const SPRINT: [number, number, number, number?][] = [
-  [-35, 5, -60], [-68, 6, -105], [-70, 6, -150], [-35, 3.4, -170, 90], [35, 3.4, -170, 90],
-  [70, 6, -150], [70, 6, -110], [45, 5, -70], [20, 4.5, -40], [0, 4, -14],
+  [-20, 5, -36], [-56, 6, -78], [-66, 5, -118], [-32, 3.4, -140, 90], [32, 3.4, -140, 90],
+  [66, 5, -118], [56, 6, -80], [27, 5, -56], [14, 4.5, -30], [6, 4, -12],
 ];
 function ringSprint(): Impl {
   let tr: RingTracker;
@@ -163,6 +168,7 @@ function ringSprint(): Impl {
   const mats: THREE.MeshStandardMaterial[] = [];
   const objs: Objective[] = [{ text: 'Fly through all 10 rings in order', done: false }];
   let rings: { pos: THREE.Vector3; quat: THREE.Quaternion; R: number }[] = [];
+  let yaws: number[] = [];
   const paint = (idx: number) => mats.forEach((m, i) => { m.emissiveIntensity = i === idx ? 5 : i < idx ? 0.15 : 1.2; m.opacity = i < idx ? 0.35 : 1; });
   const impl: Impl = {
     drone: 'spark', spec: SPARK,
@@ -170,10 +176,12 @@ function ringSprint(): Impl {
     start(ctx, st) {
       t = 0; running = false; objs[0].done = false; mats.length = 0;
       const geo = new THREE.TorusGeometry(2.6, 0.16, 12, 64);
+      yaws = [];
       rings = SPRINT.map(([x, y, z, hd], i) => {
         const [px, , pz] = SPRINT[Math.max(0, i - 1)], [nx, , nz] = SPRINT[Math.min(SPRINT.length - 1, i + 1)];
         const yaw = hd != null ? THREE.MathUtils.degToRad(hd) : Math.atan2(nx - (i === 0 ? 0 : px), nz - (i === 0 ? 0 : pz));
         const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+        yaws.push(yaw);
         const pos = new THREE.Vector3(x, y + heightAt(x, z), z);
         const m = st.mat(new THREE.MeshStandardMaterial({ color: LG, emissive: LG, emissiveIntensity: 1.2, roughness: 0.3, transparent: true }));
         mats.push(m);
@@ -201,6 +209,7 @@ function ringSprint(): Impl {
     hud: () => `${t2(t)} S   RING ${Math.min(10, (tr?.idx ?? 0) + 1)} / 10   ${chase(drillDef('ring-sprint')!, t)}`,
     value: () => Math.round(t * 100) / 100,
     detail: () => 'Ten rings around the solar field edge, clock from arming',
+    probe: () => ({ idx: tr?.idx ?? 0, rings: rings.map((r, i) => ({ x: r.pos.x, y: r.pos.y, z: r.pos.z, yaw: yaws[i] })) }),
   };
   return impl;
 }
@@ -237,7 +246,8 @@ function slalom(): Impl {
         const stripe = st.add(new THREE.Mesh(stripeGeo.clone(), sm)); stripe.rotation.x = -Math.PI / 2; stripe.position.set(s * 2.9, y + 0.06, z);
         const arrow = st.add(new THREE.Mesh(arrowGeo.clone(), sm)); arrow.rotation.x = -Math.PI / 2; arrow.position.set(s * 2.9, y + 0.08, z - 1.2);
       }
-      const gz = Z0 - N * GAP - 6;
+      // the gate stands 8 m past the last pillar, clear of the first solar row at z -115
+      const gz = Z0 - (N - 1) * GAP - 8;
       const g = st.piece({ t: 'gate', x: 0, y: heightAt(0, gz), z: gz, r: 0, s: 1.2 });
       gate = new RingTracker([g.checkpoint!]);
       paint();
@@ -273,6 +283,7 @@ function slalom(): Impl {
     hud: () => `${t2(t + penalty)} S   PILLAR ${Math.min(N, next + 1)} / ${N}${penalty ? `   PLUS ${penalty} S` : ''}`,
     value: () => Math.round((t + penalty) * 100) / 100,
     detail: () => done ? `${t2(t)} s flying, ${penalty} s penalties` : '',
+    probe: () => ({ next, penalty }),
   };
   return impl;
 }
@@ -322,7 +333,7 @@ function padHop(): Impl {
         d.rotation.x = -Math.PI / 2; d.position.copy(p.pos).add(new THREE.Vector3(0, 0.03, 0));
       });
       decals[0].opacity = 0.9;
-      ctx.marker(pads[0].pos.clone().setY(pads[0].pos.y + 1.5), pads[0].label);
+      ctx.marker(pads[0].pos.clone().setY(pads[0].pos.y + 5), pads[0].label);
       ctx.sim.impactListeners = [(sp) => {
         if (sp > 2 && t - lastHard > 0.8 && running) { lastHard = t; penalty += 3; ctx.toast(`Hard touchdown, ${sp.toFixed(1)} m/s. Plus 3 s`); }
       }];
@@ -343,7 +354,7 @@ function padHop(): Impl {
         idx++; still = 0;
         if (idx >= pads.length) { ctx.marker(null); return 'success'; }
         decals[idx].opacity = 0.9;
-        ctx.marker(pads[idx].pos.clone().setY(pads[idx].pos.y + 1.5), pads[idx].label);
+        ctx.marker(pads[idx].pos.clone().setY(pads[idx].pos.y + 5), pads[idx].label);
         ctx.toast(`${idx} of 5 down`);
       }
       return 'running';
@@ -352,6 +363,7 @@ function padHop(): Impl {
     hud: () => `${t2(t + penalty)} S   PAD ${Math.min(5, idx + 1)} / 5${penalty ? `   PLUS ${penalty} S` : ''}`,
     value: () => Math.round((t + penalty) * 100) / 100,
     detail: () => `${t2(t)} s flying, ${penalty} s for hard touchdowns`,
+    probe: () => ({ idx, penalty, target: pads[idx] ? { x: pads[idx].pos.x, y: pads[idx].pos.y, z: pads[idx].pos.z } : null }),
   };
   return impl;
 }
@@ -417,6 +429,7 @@ function targetRange(g: Game): Impl {
     objectives: () => objs,
     hud: () => `${t2(left())} S   ${range ? 15 - range.alive : 0} / 15   ${score()}`,
     value: () => score(),
+    probe: () => ({ shots: range?.shots ?? 0, hits: range?.hits ?? 0, targets: range ? range.targets.filter(x => x.alive).map(x => ({ x: x.pos.x, y: x.pos.y, z: x.pos.z })) : [] }),
     detail: () => range ? `${range.hits} of 15 hit with ${range.shots} shots${range.alive === 0 ? `, ${Math.floor(left())} s to spare` : ''}` : '',
   };
   return impl;

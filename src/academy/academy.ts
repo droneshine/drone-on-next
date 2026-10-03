@@ -23,7 +23,7 @@ export function sparkline(d: DrillDef, vals: number[], w = 96, h = 26) {
   if (!vals.length) return '';
   const lo = Math.min(...vals), hi = Math.max(...vals);
   const span = hi - lo || 1;
-  const y = (v: number) => { const k = (v - lo) / span; return 3 + (h - 6) * (d.lower ? k : 1 - k); };
+  const y = (v: number) => { if (vals.length === 1 || hi === lo) return h / 2; const k = (v - lo) / span; return 3 + (h - 6) * (d.lower ? k : 1 - k); };
   const x = (i: number) => vals.length === 1 ? w / 2 : 3 + (w - 6) * i / (vals.length - 1);
   const pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
   const bi = vals.indexOf(d.lower ? lo : hi);

@@ -33,8 +33,13 @@ export function installWorkshop(g: Game, ui: UI, celebrate: (a: AwardResult) => 
   sheet = ui.sheets.workshop;
 
   // closing the builder: the pad shows your own drone again, and Back lands in the Workshop list
+  // classList writes fire records even when nothing changed: act only on a real open to closed step
+  let wasOpen = false;
   new MutationObserver(() => {
-    if (sheet!.classList.contains('open')) return;
+    const isOpen = sheet!.classList.contains('open');
+    const closed = wasOpen && !isOpen;
+    wasOpen = isOpen;
+    if (!closed) return;
     clearTimeout(previewTimer);
     const other = Object.values(ui.sheets).some(s => s.classList.contains('open'));
     if (g.state !== 'menu' || other) return;
@@ -92,8 +97,10 @@ export function installWorkshop(g: Game, ui: UI, celebrate: (a: AwardResult) => 
     const paints = cosmetics('paint');
     const existing = !!builds()[draft.id] && ui.custom.some(d => d.id === draft.id);
     body.innerHTML = `
-      <div class="ws-stats calc" aria-live="polite">${statsHtml()}</div>
-      <div class="ws-msg" role="status" ${compute(draft).problems.length ? '' : 'hidden'}>${msgHtml()}</div>
+      <div class="ws-top">
+        <div class="ws-stats" aria-live="polite">${statsHtml()}</div>
+        <div class="ws-msg" role="status" ${compute(draft).problems.length ? '' : 'hidden'}>${msgHtml()}</div>
+      </div>
       <p class="note">Pick five parts. The drone on the pad changes with every part<span class="wide-only">, so you see it at real scale next to the base</span>. Cosmetics never change the numbers.</p>
       <h3 class="group-h">Frame</h3>
       <div class="ws-opts">${FRAMES.map(x => opt('frame', x.id, x.id === draft.frame, x.name, `${LAYOUT_NAME[x.layout]} ${Math.round(x.arm * 2000)} MM, PROPS TO ${inch(x.maxProp)}`, x.unlock)).join('')}</div>
@@ -102,7 +109,8 @@ export function installWorkshop(g: Game, ui: UI, celebrate: (a: AwardResult) => 
       <h3 class="group-h">Props</h3>
       <div class="ws-opts props">${PROPS.map(x => {
         const fit = x.d <= f.maxProp + 1e-9 && x.d <= mo.maxProp + 1e-9;
-        return opt('prop', x.d, Math.abs(x.d - draft.prop) < 1e-6, x.name, fit ? `${Math.round(Math.min(mo.thrust, 900 * x.d * x.d))} N EACH` : 'TOO BIG HERE');
+        const th = Math.min(mo.thrust, 900 * x.d * x.d);
+        return opt('prop', x.d, Math.abs(x.d - draft.prop) < 1e-6, x.name, fit ? `${th < 10 ? th.toFixed(1) : Math.round(th)} N EACH` : 'TOO BIG HERE');
       }).join('')}</div>
       <h3 class="group-h">Battery</h3>
       <div class="fields">
