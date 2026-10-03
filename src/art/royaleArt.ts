@@ -8,6 +8,7 @@ import { Effects } from './fx';
 import { ScreenImpl } from './screen';
 import { Beacons } from './beacons';
 import { Crowd } from './crowd';
+import { warmTierAssets } from './tierSpecs';
 
 // The real Royale look behind createRoyaleArt (src/art/index.ts). One group in the scene holds
 // every art object; update() advances the shared clock once per frame and drives everything.
@@ -36,6 +37,8 @@ export class RoyaleArtImpl implements RoyaleArt {
     this.beacons = new Beacons(this.group);
     this.crowd = new Crowd(this.group);
     this.screen = new ScreenImpl();
+    // the four tiers in their GDD paint: an evolve never builds geometry mid fight
+    warmTierAssets();
   }
 
   ring(kind: RingKind, radius: number): RingVisual {

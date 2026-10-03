@@ -8,3 +8,5 @@ import { RoyaleSfxImpl } from './sfx';
 export function createRoyaleArt(scene: THREE.Scene, _camera: THREE.Camera): RoyaleArt { return new RoyaleArtImpl(scene); }
 export function createRoyaleSfx(): RoyaleSfx { return new RoyaleSfxImpl(); }
 export type * from './contracts';
+/** optional: warm the shared tier geometry with gameplay's own tier specs at match load */
+export { warmTierAssets } from './tierSpecs';

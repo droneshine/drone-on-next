@@ -10,6 +10,7 @@ import { RoyaleArtImpl } from './royaleArt';
 import { RoyaleSfxImpl } from './sfx';
 import { RingImpl } from './rings';
 import { triangles } from './kit';
+import { tierSpec } from './tierSpecs';
 
 // Dev only art review, opened with #artgallery (see studio/ART.md 8). It borrows the running game:
 // same renderer, world, light, bloom and thermal camera, so what you judge here is what ships.
@@ -18,18 +19,6 @@ import { triangles } from './kit';
 
 const TIERS: TierId[] = ['spark', 'bolt', 'storm', 'nova'];
 
-/** GDD 6.1 tier specs, local to the gallery (gameplay owns the real table in src/royale) */
-function tierSpec(t: TierId): DroneSpec {
-  const base = {
-    author: 'DroneShine', tagline: '', defaultMode: 'gps' as const, rates: { rcRate: 0.9, superRate: 0.55, expo: 0.3 },
-  };
-  switch (t) {
-    case 'spark': return { ...base, id: 'spark', name: 'SPARK', model: 'spark', layout: 'quadX', armLength: 0.16, propDiameter: 0.18, mass: 1.1, maxThrust: 8, motorTau: 0.03, dragArea: 0.03, battery: { cells: 4, capacityAh: 1.8 }, maxTilt: 28, maxSpeed: 12, maxClimb: 5, maxYawRate: 180, camUptilt: 20, tool: 'camera', color: '#26c257', accent: '#f7f7f2' };
-    case 'bolt': return { ...base, id: 'bolt', name: 'BOLT', model: 'bolt', layout: 'quadX', armLength: 0.24, propDiameter: 0.254, mass: 1.9, maxThrust: 13.5, motorTau: 0.04, dragArea: 0.045, battery: { cells: 6, capacityAh: 2 }, maxTilt: 30, maxSpeed: 14, maxClimb: 6, maxYawRate: 160, camUptilt: 15, tool: 'lance', flow: 9, color: '#8fc2f5', accent: '#002518' };
-    case 'storm': return { ...base, id: 'storm', name: 'STORM', model: 'storm', layout: 'hexX', armLength: 0.34, propDiameter: 0.3, mass: 3, maxThrust: 15, motorTau: 0.045, dragArea: 0.07, battery: { cells: 6, capacityAh: 3.5 }, maxTilt: 32, maxSpeed: 16, maxClimb: 7, maxYawRate: 140, camUptilt: 10, tool: 'lance', flow: 9, color: '#004225', accent: '#b5f78a' };
-    default: return { ...base, id: 'nova', name: 'NOVA', model: 'nova', layout: 'coaxX8', armLength: 0.4, propDiameter: 0.33, mass: 4.6, maxThrust: 17, motorTau: 0.05, dragArea: 0.1, battery: { cells: 8, capacityAh: 4 }, maxTilt: 34, maxSpeed: 18, maxClimb: 8, maxYawRate: 120, camUptilt: 5, tool: 'lance', flow: 9, color: '#f7f7f2', accent: '#26c257' };
-  }
-}
 const SPEC_LINE: Record<TierId, string> = {
   spark: 'QUAD X  7 IN',
   bolt: 'QUAD X  10 IN  TANK',
@@ -124,6 +113,64 @@ class Gallery {
     };
     addEventListener('hashchange', () => this.apply());
     this.apply();
+    this.installChecks();
+  }
+
+  /** QA hooks for tools/artgallery.mjs: dispose leaks and the sound mix headroom */
+  private installChecks() {
+    const game = this.game;
+    const w = window as unknown as Record<string, unknown>;
+    w.__artDisposeTest = async () => {
+      const r = game.renderer, scene = game.world.scene, cam = game.camera;
+      const visual = await buildDroneVisual(tierSpec('bolt'));
+      visual.root.position.set(0, 5, -12);
+      scene.add(visual.root);
+      game.composer.render(0.016);
+      const snap = () => ({ geometries: r.info.memory.geometries, textures: r.info.memory.textures, programs: r.info.programs?.length ?? 0, sceneChildren: scene.children.length, overlays: document.querySelectorAll('.dfx').length });
+      const before = snap();
+      const art = new RoyaleArtImpl(scene);
+      const p = new THREE.Vector3(0, 5, -10), d = new THREE.Vector3(0, 0, -1);
+      const rings = (['shine', 'bigshine', 'charge', 'repair'] as RingKind[]).map((k, i) => { const x = art.ring(k, 2.6); x.object.position.set(i * 6, 4, -20); scene.add(x.object); x.setState('cooldown', 0.5); x.highlight(true); return x; });
+      const cache = art.shineCache(); scene.add(cache.object);
+      const sig = art.signal(); sig.set(0, -60, 100, 60);
+      const hs: number[] = []; for (let i = 0; i < 300; i++) hs.push(art.bolt(p, d, 'nova', '#f7f7f2'));
+      art.waterJet('qa', p, d, 20, true); art.emp(p, 15, false, 'charge'); art.emp(p, 15, false, 'burst'); art.emp(p, 20, true, 'burst');
+      art.evolve(visual.root, 'storm'); art.boost(visual.root, true);
+      art.hit(p, 20, false); art.knockout(p); art.ringTaken(p, 'bigshine');
+      art.screen.damageFrom(1, 20); art.screen.evolveFlash('nova'); art.screen.scrambled(true); art.screen.lowIntegrity(true); art.screen.staticAmount(0.5);
+      for (let i = 0; i < 12; i++) { p.z -= 1; for (const h of hs) art.moveBolt(h, p); art.update(0.016, cam); cache.update(0.016); game.composer.render(0.016); }
+      const during = snap();
+      for (const h of hs.slice(0, 150)) art.removeBolt(h, { pos: p, hitDrone: true });
+      for (const x of rings) x.dispose();
+      art.dispose();
+      game.composer.render(0.016);
+      const after = snap();
+      scene.remove(visual.root); disposeVisual(visual);
+      return { before, during, after };
+    };
+    w.__sfxPeak = async (ms = 3000) => {
+      audio.start();
+      await new Promise(res => setTimeout(res, 150));
+      const ctx = audio.ctx;
+      if (!ctx) return { error: 'no audio context' };
+      const an = ctx.createAnalyser(); an.fftSize = 2048;
+      audio.master.connect(an);
+      const buf = new Float32Array(an.fftSize);
+      let peak = 0;
+      // the worst case: 50 drones firing, 12 water jets, EMPs and knockouts on top
+      this.fireStorm(50);
+      for (let i = 0; i < 12; i++) this.sfx.water('qa' + i, true, 5 + i * 4);
+      [0, 400, 800, 1200].forEach(t => setTimeout(() => { this.sfx.emp(true, 8); this.sfx.knockout(10); this.sfx.hit(true); this.sfx.ring('bigshine', 0); }, t));
+      const t0 = performance.now();
+      while (performance.now() - t0 < ms) {
+        an.getFloatTimeDomainData(buf);
+        for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i]));
+        await new Promise(res => setTimeout(res, 15));
+      }
+      for (let i = 0; i < 12; i++) this.sfx.water('qa' + i, false, 0);
+      audio.master.disconnect(an);
+      return { state: ctx.state, peak: +peak.toFixed(3), peakDb: +(20 * Math.log10(Math.max(1e-6, peak))).toFixed(1), masterGain: audio.master.gain.value };
+    };
   }
 
   // ---------------------------------------------------------------- panel
