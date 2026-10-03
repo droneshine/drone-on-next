@@ -11,6 +11,7 @@ import { sanitizeMap } from './game/builder';
 import './art/register';
 import { installRoyale } from './royale';
 import { installMeta } from './meta';
+import { installXR } from './xr';
 
 const bar = document.querySelector<HTMLElement>('.boot-bar i')!;
 const step = (p: number) => { bar.style.setProperty('--p', String(p)); };
@@ -71,6 +72,7 @@ async function boot() {
     const ui = new UI(game);
     installMeta(game, ui);
     installRoyale(game, ui);
+    installXR(game, ui); // ENTER VR, only where the browser supports immersive VR (src/xr)
     (window as unknown as { droneon: unknown }).droneon = { game, ui };
     // dev only: QA rigs in tools/ render with the same THREE instance
     if (import.meta.env.DEV) (window as unknown as { THREE: unknown }).THREE = THREE;

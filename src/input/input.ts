@@ -3,7 +3,11 @@
 
 import { Sticks } from '../sim/drone';
 
-export type Device = 'keyboard' | 'gamepad' | 'rc' | 'touch';
+export type Device = 'keyboard' | 'gamepad' | 'rc' | 'touch' | 'xr';
+
+/** VR controllers, filled every XR frame by src/xr: thumbstick axes as a gamepad reports them,
+ *  and button presses already translated to standard gamepad indices (4 mode, 8 reset, 2 tag, 3 thermal). */
+export interface XrPads { lx: number; ly: number; rx: number; ry: number; hits: number[]; moved: boolean; }
 
 export interface AxisMap { throttle: number; yaw: number; pitch: number; roll: number; invert: { throttle: boolean; yaw: boolean; pitch: boolean; roll: boolean }; }
 export interface Calib { min: number[]; max: number[]; center: number[]; }
@@ -78,6 +82,8 @@ export class Input {
   touchBuildLift = 0;
   undoPressed = false;
   uiClick = -1;      // canvas click for build mode, 0 left, 1 middle
+  /** set by src/xr while a VR session runs, null otherwise */
+  xr: XrPads | null = null;
 
   constructor() {
     this.settings = loadSettings();
@@ -119,7 +125,8 @@ export class Input {
 
   activePad(): Gamepad | null {
     const pads = navigator.getGamepads?.() ?? [];
-    for (const p of pads) if (p && p.connected) return p;
+    // VR controllers ('xr-standard') report through the VR session (src/xr), never as a plain gamepad
+    for (const p of pads) if (p && p.connected && p.mapping !== 'xr-standard') return p;
     return null;
   }
 
@@ -152,8 +159,14 @@ export class Input {
       const moved = this.padPressed.size > 0 || pad.axes.some((a, i) => Math.abs(a - rest[i]) > 0.3 && Math.abs(a - prev[i]) > 0.02);
       this.padPrev = [...pad.axes];
       const screenSticks = this.touch.left.active || this.touch.right.active;
-      if (moved && !screenSticks && (this.device === 'keyboard' || this.device === 'touch')) this.device = this.looksLikeRC(pad) ? 'rc' : 'gamepad';
+      if (moved && !screenSticks && (this.device === 'keyboard' || this.device === 'touch' || this.device === 'xr')) this.device = this.looksLikeRC(pad) ? 'rc' : 'gamepad';
       this.gamepadName = pad.id;
+    }
+    // VR controllers: their button presses act like gamepad buttons, a moved thumbstick takes over the sticks
+    const xr = this.xr;
+    if (xr) {
+      for (const i of xr.hits) this.padPressed.add(i);
+      if (xr.moved && this.device !== 'xr') this.device = 'xr';
     }
     if (!this.enabled) {
       // chat or a text field has the keys: let go of every stick so nothing keeps flying on its own
@@ -193,6 +206,18 @@ export class Input {
       this.sticks.yaw = this.shape(tStick.x, s.expo, s.deadband);
       this.sticks.pitch = this.shape(cStick.y, s.expo, s.deadband);
       this.sticks.roll = this.shape(cStick.x, s.expo, s.deadband);
+      return;
+    }
+    if (this.device === 'xr' && xr) {
+      // Touch controller thumbsticks, mode 2 like a gamepad: centred throttle is hover in GPS mode.
+      // Their sticks drift more than a gamepad's, so the deadband never goes below 0.08.
+      const left = { x: xr.lx, y: -xr.ly }, right = { x: xr.rx, y: -xr.ry };
+      const [tStick, cStick] = s.mode === 2 ? [left, right] : [{ x: left.x, y: right.y }, { x: right.x, y: left.y }];
+      const db = Math.max(0.08, s.deadband);
+      this.sticks.throttle = (this.shape(tStick.y, 0, db) + 1) / 2;
+      this.sticks.yaw = this.shape(tStick.x, s.expo, db);
+      this.sticks.pitch = this.shape(cStick.y, s.expo, db);
+      this.sticks.roll = this.shape(cStick.x, s.expo, db);
       return;
     }
     if (this.device === 'touch') {
