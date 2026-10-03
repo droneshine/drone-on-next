@@ -188,11 +188,11 @@ export function installAcademy(g: Game, ui: UI) {
     const lines: string[] = [];
     let html = '';
     if (!r) {
-      html = `
+      html = `<div class="ac-col a">
         <p class="ac-drill-name">${d.title}</p>
         <h2 class="ac-score fail">CRASHED</h2>
         <p class="ac-line">${esc(o.reason)}</p>
-        <p class="ac-line dim">Only finished runs count. Your best stays where it is.</p>`;
+        <p class="ac-line dim">Only finished runs count. Your best stays where it is.</p></div>`;
     } else {
       const rec = allRecords()[d.id];
       const medal = r.medal;
@@ -201,26 +201,30 @@ export function installAcademy(g: Game, ui: UI) {
       const nextI = d.medals.findIndex(t => (d.lower ? r.value > t : r.value < t));
       const near = nextI >= 0 ? `${d.lower ? (r.value - d.medals[nextI]).toFixed(d.unit === 's' ? 2 : 0) : Math.round(d.medals[nextI] - r.value)} ${unitLabel(d)} TO ${MEDALS[nextI]}` : '';
       for (const l of r.award.lines) lines.push(`<li><b>+${l.xp} XP</b><span>${esc(l.label)}</span></li>`);
-      html = `
+      html = `<div class="ac-col a">
         <p class="ac-drill-name">${d.title}</p>
         <h2 class="ac-score">${formatValue(d, r.value)}</h2>
         <p class="ac-medal ${medal ? 'm' + medal : 'none'}">${medal ? medalName(medal) : 'NO MEDAL'}${r.medal > r.medalBefore ? '<span>NEW</span>' : ''}</p>
         <p class="ac-line ${r.isBest ? 'best' : ''}">${headline}</p>
         ${near ? `<p class="ac-line dim">${near}</p>` : ''}
-        <p class="ac-line dim">${esc(o.detail)}</p>
-        <div class="ac-history"><span>LAST ${r.history.length}</span>${sparkline(d, r.history, 220, 40)}</div>
+        <p class="ac-line dim">${esc(o.detail)}</p></div>
+        <div class="ac-col b"><div class="ac-history"><span>LAST ${r.history.length}</span>${sparkline(d, r.history, 220, 40)}</div>
         <div class="ac-psline"><span>PILOT SKILL</span><b>${Math.round(r.pilotSkill)}</b><em class="${r.weekDelta >= 0.5 ? 'up' : ''}">${weekLine(r.weekDelta, true)}</em></div>
         ${lines.length ? `<ul class="ac-xp">${lines.join('')}</ul>` : ''}
         <div class="ac-level"><div class="ac-lvl"><b>LEVEL <span data-lvl>${levelBefore.level}</span></b><em data-xp></em></div><i><b data-fill></b></i></div>
         <p class="ac-unlocks" hidden></p>`;
     }
+    const twoCols = !!r;
     const idx = DRILLS.findIndex(x => x.id === d.id);
-    box.innerHTML = html + `
+    const acts = `
       <div class="ac-acts">
         <button class="btn go" data-a="again"><i class="ph ph-arrow-counter-clockwise"></i>Again<kbd>R</kbd></button>
         <button class="btn line" data-a="next">${DRILLS[(idx + 1) % DRILLS.length].title.toLowerCase().replace(/^\w|\s\w/g, c => c.toUpperCase())} <i class="ph ph-arrow-right"></i></button>
         <button class="btn quiet" data-a="academy">Academy</button>
       </div>`;
+    // the buttons close the second column, so on a short landscape screen they sit next to the score, not below the fold
+    box.innerHTML = twoCols ? html + acts + '</div>' : html + acts;
+    box.classList.toggle('two', twoCols);
     resultOpen = true;
     result.inert = false;
     result.classList.add('open');

@@ -107,6 +107,12 @@
 .ac-acts kbd { font-family: var(--text); font-size: 11px; font-weight: 700; opacity: 0.6; border: 1px solid rgba(0, 37, 24, 0.4); border-radius: 3px; padding: 0 4px; }
 @media (pointer: coarse) { .ac-acts kbd { display: none; } .ac-acts .btn { height: 48px; } }
 
+/* short landscape screens (phones on their side, the RC7): score left, history, XP and buttons right */
+@media (max-height: 700px) and (min-width: 700px) {
+  .ac-box.two { width: min(880px, 94vw); display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); column-gap: 34px; align-items: start; }
+  .ac-box.two .ac-history { margin-top: 4px; padding-top: 0; border-top: 0; }
+  .ac-box.two .ac-acts { margin-top: 16px; }
+}
 @media (max-width: 760px) {
   .ac-skill { grid-template-columns: 1fr; gap: 14px; }
   .ac-ps { grid-template-columns: auto 1fr; align-items: end; column-gap: 14px; }

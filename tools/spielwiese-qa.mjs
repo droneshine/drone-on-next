@@ -57,7 +57,7 @@ async function openAcademy() {
 
 async function flyDrill(id, { shotMid = false } = {}) {
   await openAcademy();
-  await tap(`[data-drill=${id}] .ac-head`);
+  if (!(await page.$eval(`[data-drill=${id}]`, e => e.classList.contains('open')))) await tap(`[data-drill=${id}] .ac-head`);
   await tap(`[data-drill=${id}] .start`, { after: 900 });
   await page.waitForFunction(() => window.droneon.game.state === 'mission', { timeout: 20000 });
   await sleep(500);
@@ -127,9 +127,49 @@ try {
     await page.evaluate(() => window.__ap.sticks(0.85, 0, 0, 0));
     await sleep(1500);
     await page.evaluate(() => window.__ap.sticks(0.5, 0, 0, 0));
-    await sleep(60500);
+    // a minute of sim time in the air (the sim slows down when the machine is busy)
+    await page.waitForFunction(() => window.droneon.game.flightTime > 61, { timeout: 180000, polling: 500 }).catch(() => {});
+    await sleep(800);
     console.log('airtime', await page.evaluate(() => JSON.parse(localStorage.getItem('droneon2.pilot') || '{}').daily?.used?.airtime), await page.evaluate(() => [...document.querySelectorAll('.toast')].map(t => t.textContent).join(' | ')));
     await shot('airtime');
+  }
+  if (STEPS.includes('keyboard')) {
+    // TARGET RANGE with real key presses: W to arm and climb, A and D to aim, Space held to fire
+    await openAcademy();
+    if (!(await page.$eval('[data-drill=target-range]', e => e.classList.contains('open')))) await tap('[data-drill=target-range] .ac-head');
+    await tap('[data-drill=target-range] .start', { after: 900 });
+    await page.waitForFunction(() => window.droneon.game.state === 'mission', { timeout: 20000 });
+    await page.mouse.click(W / 2, H / 2);
+    await page.keyboard.down('KeyW'); await sleep(2200); await page.keyboard.up('KeyW');
+    let fire = false;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 62000) {
+      const st = await page.evaluate(() => {
+        const g = window.droneon.game; if (g.state !== 'mission') return null;
+        const s = g.sim, tg = g.mission.probe().targets; if (!tg.length) return null;
+        let best = tg[0], bd = 1e9; for (const t of tg) { const d = Math.hypot(t.x - s.pos.x, t.z - s.pos.z); if (d < bd) { bd = d; best = t; } }
+        const b = Math.atan2(-(best.x - s.pos.x), -(best.z - s.pos.z)); let e = b - s.heading(); while (e > Math.PI) e -= 2 * Math.PI; while (e < -Math.PI) e += 2 * Math.PI;
+        return { e, d: bd, dy: best.y - s.pos.y, locked: g.mission.probe().locked };
+      });
+      if (!st) break;
+      // like a pilot: squeeze the trigger only with the crosshair locked on
+      if (st.locked && !fire) { await page.keyboard.down('Space'); fire = true; }
+      if (!st.locked && fire) { await page.keyboard.up('Space'); fire = false; }
+      const key = st.e > 0 ? 'KeyA' : 'KeyD';
+      if (Math.abs(st.e) > 0.05) { await page.keyboard.down(key); await sleep(Math.min(400, Math.abs(st.e) * 300)); await page.keyboard.up(key); }
+      if (st.d > 45) { await page.keyboard.down('ArrowUp'); await sleep(350); await page.keyboard.up('ArrowUp'); }
+      if (st.dy > 3) { await page.keyboard.down('KeyW'); await sleep(250); await page.keyboard.up('KeyW'); }
+      if (st.dy < -3) { await page.keyboard.down('KeyS'); await sleep(200); await page.keyboard.up('KeyS'); }
+      await sleep(60);
+    }
+    if (fire) await page.keyboard.up('Space');
+    await page.waitForFunction(() => document.querySelector('.ac-result')?.classList.contains('open'), { timeout: 30000 }).catch(() => {});
+    await sleep(1200);
+    console.log('keyboard range', JSON.stringify(await page.evaluate(() => ({ score: document.querySelector('.ac-score')?.textContent, medal: document.querySelector('.ac-medal')?.textContent, detail: [...document.querySelectorAll('.ac-line.dim')].map(x => x.textContent).join(' | ') }))));
+    await shot('keyboard-range');
+    await page.keyboard.press('KeyR');
+    await sleep(1500);
+    console.log('R from results ->', await state(), await page.evaluate(() => window.droneon.game.mission?.id));
   }
   if (STEPS.includes('pilot')) {
     await page.evaluate(() => window.droneon.game.enterMenu());
@@ -170,14 +210,76 @@ try {
     await tap('[data-sw=fly]', { after: 1500 });
     await page.evaluate(() => window.__ap.sticks(0.5, 0, 0, 0));
     await sleep(300);
-    await page.evaluate(() => window.__ap.sticks(0.85, 0, 0, 0));
-    await sleep(1800);
-    await page.evaluate(() => window.__ap.sticks(0.6, 0, 0.8, 0));
+    await page.evaluate(() => window.__ap.sticks(0.95, 0, 0, 0));
+    await sleep(3200);
+    await page.evaluate(() => window.__ap.sticks(0.55, 0, 0.8, 0));
     await sleep(2500);
     const fly = await page.evaluate(() => ({ state: window.droneon.game.state, spec: window.droneon.game.spec.name, armed: window.droneon.game.sim.armed, alt: window.droneon.game.sim.agl.toFixed(1), v: window.droneon.game.sim.speed().toFixed(1) }));
     console.log('flying', JSON.stringify(fly));
     await shot('workshop-flying');
     await page.evaluate(() => window.__ap.sticks(0.5, 0, 0, 0));
+  }
+  if (STEPS.includes('cosmetics')) {
+    // jump the profile to level 8 (dev module import, same instance as the app), then equip and fly with real taps
+    await page.evaluate(async () => { const p = await import('/src/meta/progression.ts'); return p.awardXp([{ label: 'QA', xp: 5000 }], 'daily'); });
+    await page.evaluate(() => window.droneon.game.enterMenu());
+    await sleep(700);
+    await page.evaluate(() => window.droneon.ui.closeSheets());
+    await sleep(300);
+    await shot('menu-level');
+    await tap('.pilot-chip');
+    await tap('[data-kind=led][data-id=led-blue]');
+    await tap('[data-kind=trail][data-id=trail-shine]');
+    await tap('[data-kind=title][data-id=title-static]');
+    await page.evaluate(() => { document.querySelector('[data-sheet=pilot] .body').scrollTop = 0; });
+    await shot('pilot-level');
+    await page.evaluate(() => window.droneon.ui.closeSheets());
+    await sleep(300);
+    await tap('[data-go=hangar]');
+    await tap('.ws-entry', { after: 800 });
+    await tap('[data-slot=frame][data-v=longrange7]');
+    await tap('[data-slot=motor][data-v=m25]');
+    await sleep(600);
+    await shot('workshop-level');
+    await tap('[data-save=fly]', { after: 2000 });
+    // this frame starts in Angle: throttle all the way down first, then up to arm
+    await page.evaluate(() => window.__ap.sticks(0, 0, 0, 0));
+    await sleep(500);
+    await page.evaluate(() => window.__ap.sticks(0.95, 0, 0, 0));
+    await sleep(2500);
+    await page.evaluate(() => window.__ap.sticks(0.6, 0.15, 1, 0));
+    await sleep(2200);
+    console.log('trail flight', JSON.stringify(await page.evaluate(() => ({ spec: window.droneon.game.spec.name, v: window.droneon.game.sim.speed().toFixed(1), leds: window.droneon.game.visual.leds.map(l => '#' + l.material.color.getHexString()) }))));
+    await shot('trail');
+    await page.evaluate(() => window.__ap.sticks(0.5, 0, 0, 0));
+  }
+  if (STEPS.includes('regress')) {
+    // what worked before must still work: build mode from the Spielwiese, a shared course link, the squad lobby, the pause menu
+    await page.evaluate(() => window.droneon.game.enterMenu());
+    await sleep(600);
+    await page.evaluate(() => window.droneon.ui.closeSheets());
+    await sleep(300);
+    await tap('[data-go=spielwiese]');
+    await tap('[data-sw=build]', { after: 1500 });
+    console.log('build state', await state());
+    await shot('build');
+    await tap('.build [data-b=menu]', { after: 900 });
+    console.log('back to', await state());
+    await tap('[data-go=squad]');
+    await shot('squad');
+    await page.evaluate(() => window.droneon.ui.closeSheets());
+    await sleep(300);
+    await tap('[data-go=spielwiese]');
+    await tap('[data-sw=fly]', { after: 1500 });
+    await page.keyboard.press('Escape');
+    await sleep(500);
+    await shot('pause');
+    const code = await page.evaluate(async () => { const st = await import('/src/game/store.ts'); const b = await import('/src/game/builder.ts'); return st.encodeShare(b.starterMap()); });
+    await page.goto('about:blank'); await page.goto(PAGE + '#map=' + code, { waitUntil: 'load' });
+    await page.waitForFunction(() => document.getElementById('boot')?.classList.contains('gone'), { timeout: 90000 });
+    await sleep(1500);
+    console.log('shared link', JSON.stringify(await page.evaluate(() => ({ state: window.droneon.game.state, origin: window.droneon.game.builder.origin, pieces: window.droneon.game.builder.map.pieces.length }))));
+    await shot('shared');
   }
   if (STEPS.includes('sheets')) {
     await page.evaluate(() => window.droneon.game.enterMenu());

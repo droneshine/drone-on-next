@@ -8,9 +8,10 @@
   .rail .cmd { padding: 7px 0; }
   .rail .cmd b { font-size: clamp(22px, min(2.6vw, 3.4vh), 31px); }
 }
-.rail-first { margin: -2px 0 6px; }
-.first-hint { display: inline-flex; gap: 8px; align-items: center; padding: 6px 0 8px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.08em; color: var(--lg); opacity: 0.86; transition: opacity 160ms ease, transform 160ms var(--ease-out); }
-.first-hint i { font-size: 15px; transition: transform 200ms var(--ease-out); }
+.rail-first { margin: -2px 0 6px; line-height: 1.5; }
+.first-hint { display: inline; text-align: left; padding: 6px 0 8px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.07em; color: var(--lg); opacity: 0.86; transition: opacity 160ms ease, transform 160ms var(--ease-out); }
+.first-hint i { display: inline-block; margin-left: 6px; font-size: 15px; vertical-align: -0.2em; transition: transform 200ms var(--ease-out); }
+.first-hint .nw { white-space: nowrap; }
 .first-hint:active { transform: scale(0.98); }
 @media (hover: hover) and (pointer: fine) { .first-hint:hover { opacity: 1; } .first-hint:hover i { transform: translateX(3px); } }
 
@@ -94,6 +95,12 @@
 .ry-soon p { margin-top: 14px; color: var(--off); opacity: 0.86; line-height: 1.6; max-width: 56ch; }
 .ry-acts { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 24px; }
 
+/* the drone line under a narrow desktop rail (RC7, phones on their side) keeps a readable width */
+@media (min-width: 761px) and (max-width: 1180px) {
+  .spec-line { max-width: calc(100vw - min(520px, 46vw) - 48px); }
+  .spec-line .name { font-size: clamp(26px, 3.6vw, 44px); }
+}
+@media (min-width: 761px) and (max-height: 520px) { .spec-line .tag { display: none; } .spec-line .facts { margin-top: 8px; gap: 16px; } }
 @media (max-width: 760px) {
   .pp-head { grid-template-columns: 1fr; }
   .pp-level > b { font-size: 60px; }

@@ -429,7 +429,7 @@ function targetRange(g: Game): Impl {
     objectives: () => objs,
     hud: () => `${t2(left())} S   ${range ? 15 - range.alive : 0} / 15   ${score()}`,
     value: () => score(),
-    probe: () => ({ shots: range?.shots ?? 0, hits: range?.hits ?? 0, targets: range ? range.targets.filter(x => x.alive).map(x => ({ x: x.pos.x, y: x.pos.y, z: x.pos.z })) : [] }),
+    probe: () => ({ shots: range?.shots ?? 0, hits: range?.hits ?? 0, locked: !!range?.lock, targets: range ? range.targets.filter(x => x.alive).map(x => ({ x: x.pos.x, y: x.pos.y, z: x.pos.z })) : [] }),
     detail: () => range ? `${range.hits} of 15 hit with ${range.shots} shots${range.alive === 0 ? `, ${Math.floor(left())} s to spare` : ''}` : '',
   };
   return impl;

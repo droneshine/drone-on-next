@@ -3,13 +3,14 @@ import type { Game } from '../game/game';
 import type { UI } from '../ui/ui';
 import { audio } from '../audio/audio';
 import { progress } from '../game/store';
-import { awardXp, capDaily, pilotLevel } from './progression';
+import { awardXp, capDaily, pilotLevel, onPilotChange } from './progression';
 import { equippedCosmetics } from './cosmetics';
 import { installPilot } from './pilot';
 import { installAcademy } from '../academy/academy';
 import { isDrill } from '../academy/drills';
 import { installWorkshop } from '../workshop/workshop';
 import { builds } from '../workshop/parts';
+import { Trail } from './trail';
 import './meta.css';
 
 // Spielwiese depth entry point (GDD 3): Academy, Workshop, pilot progression and the rail around them.
@@ -54,7 +55,7 @@ export function installMeta(game: Game, ui: UI) {
     const fresh = () => {
       try { return !localStorage.getItem('droneon2.progress') && !localStorage.getItem('droneon2.academy') && pilotLevel().level === 1 && pilotLevel().xpIntoLevel === 0; } catch { return false; }
     };
-    first.innerHTML = `<button type="button" class="first-hint">NEW HERE? LEARN TO FLY IN THE ACADEMY<i class="ph ph-arrow-right"></i></button>`;
+    first.innerHTML = `<button type="button" class="first-hint">NEW HERE? LEARN TO FLY IN THE <span class="nw">ACADEMY<i class="ph ph-arrow-right"></i></span></button>`;
     first.hidden = !fresh();
     first.querySelector('button')!.addEventListener('click', () => { audio.start(); audio.tick(); academy.open('drills'); });
     g.on('state', () => { if (g.state === 'menu') first.hidden = !fresh(); });
@@ -107,12 +108,19 @@ export function installMeta(game: Game, ui: UI) {
   });
 
   // ------------------------------------------------------------------ per frame: airtime, trail
-  const trailCol: number[][] = [];
+  const trailCol: THREE.Color[] = [];
   let trailId = '';
   const tmp = new THREE.Vector3(), back = new THREE.Vector3();
+  // what the pilot wears, cached: the frame loop must not parse storage 60 times a second
+  let worn = equippedCosmetics();
+  onPilotChange(() => { worn = equippedCosmetics(); });
+  const trailFx = new Trail();
+  g.world.scene.add(trailFx.points);
+  g.on('state', () => { if (g.state !== 'fly') trailFx.clear(); });
   g.on('frame', (dt) => {
     const d = Number(dt) || 0;
     const s = g.sim;
+    trailFx.update(g.paused ? 0 : d, g.camera);
     if (g.state !== 'fly' || g.paused || !s) return;
     if (s.armed && !s.onGround) {
       air += d;
@@ -122,20 +130,18 @@ export function installMeta(game: Game, ui: UI) {
         if (give > 0) pilot.celebrate(awardXp([{ label: 'AIRTIME', xp: give }], 'airtime'), 'AIRTIME');
       }
     }
-    const trail = equippedCosmetics().trail;
+    const trail = worn.trail;
     if (!trail || !s.armed || s.crashed) return;
-    if (trail.id !== trailId) {
-      trailId = trail.id; trailCol.length = 0;
-      for (const c of trail.colors) { const k = new THREE.Color(c); trailCol.push([k.r * 2.2, k.g * 2.2, k.b * 2.2]); }
-    }
+    if (trail.id !== trailId) { trailId = trail.id; trailCol.length = 0; for (const c of trail.colors) trailCol.push(new THREE.Color(c)); }
     const sp = s.speed();
     if (sp < 4) return;
     const L = g.spec.armLength * 2 + g.spec.propDiameter;
     back.copy(s.vel).normalize();
-    for (let i = 0; i < 2; i++) {
-      const c = trailCol[(Math.random() * trailCol.length) | 0];
-      tmp.copy(s.pos).addScaledVector(back, -L * (0.5 + Math.random() * 0.4));
-      g.particles.emit(tmp, back.clone().multiplyScalar(-0.6).add(new THREE.Vector3((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4)), 0.7, Math.max(0.12, L * 0.35), c[0], c[1], c[2], 0.28);
+    // spread the dots over the distance flown this frame, so a fast drone draws a line, not dots
+    const n = Math.min(6, 2 + Math.round(sp * d * 3));
+    for (let i = 0; i < n; i++) {
+      tmp.copy(s.pos).addScaledVector(back, -L * 0.55 - sp * d * (i / n));
+      trailFx.emit(tmp, trailCol[(i + Math.abs(Math.round(s.pos.x + s.pos.z))) % trailCol.length], Math.max(0.1, L * 0.32));
     }
   });
 
