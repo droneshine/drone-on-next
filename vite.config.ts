@@ -19,7 +19,8 @@ function precache(): Plugin {
           if (st.isDirectory()) walk(p);
           // skip the worker itself, source maps and anything too big for a first visit;
           // legacy font formats (ttf, woff, svg) are only fallbacks, every browser that runs WebGL2 takes woff2
-          else if (n !== 'sw.js' && !/\.(map|ttf|woff|svg|eot)$/.test(n) && st.size < 6e6) files.push(p);
+          // og.jpg is only for link previews and debug only runs with #debug
+          else if (n !== 'sw.js' && n !== 'og.jpg' && !/^debug-/.test(n) && !/\.(map|ttf|woff|svg|eot)$/.test(n) && st.size < 6e6) files.push(p);
         }
       };
       walk(outDir);

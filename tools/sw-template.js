@@ -14,7 +14,8 @@ self.addEventListener('install', e => {
     // one by one, so a single missing file never breaks the whole install
     await Promise.all(ASSETS.map(async url => {
       try {
-        const res = await fetch(url, { cache: 'reload' });
+        const hashed = /\/assets\/[^/]+-[A-Za-z0-9_-]{6,}\.[a-z0-9]+$/.test(url);
+        const res = await fetch(url, { cache: hashed ? 'default' : 'reload' });
         if (res.ok) await cache.put(url, res);
       } catch { /* offline during install: it fills in later */ }
     }));

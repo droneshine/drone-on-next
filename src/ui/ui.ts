@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Game } from '../game/game';
 import { DroneSpec, FEATURED, featured, looksLikeDrone, motorCount, validateSpec } from '../sim/spec';
 import { listCustomDrones, saveCustomDrone, deleteCustomDrone, progress, downloadFile, readFileAs, encodeShare, decodeShare, getLS } from '../game/store';
-import { PIECES, MapData, starterMap } from '../game/builder';
+import { PIECES, MapData, starterMap, sanitizeMap } from '../game/builder';
 import { rawAxes } from '../input/input';
 import { parseGlb } from '../render/droneModels';
 import { audio } from '../audio/audio';
@@ -69,7 +69,10 @@ export class UI {
     g.on('build-select', () => this.syncBuildBar());
     g.on('build-changed', () => { if (g.state === 'build') this.syncBuildBar(); });
     g.on('drone', () => { this.syncToolButtons(); this.renderSpecLine(); this.renderHint(); this.syncKnobs(); });
-    g.on('mode', () => this.syncKnobs());
+    g.on('mode', () => { this.syncKnobs(); this.renderHint(); });
+    g.on('gl', (st) => this.glNotice(String(st)));
+    // a phone or the RC7 screen starts on touch, so the menu says what is really in use
+    if (coarse() && g.input.device === 'keyboard') g.input.device = 'touch';
     this.loadCustom();
     fetch(BASE + 'community/index.json').then(r => r.ok ? r.json() : []).then((list: unknown) => {
       this.community = (Array.isArray(list) ? list : []).filter(looksLikeDrone).map(validateSpec);
@@ -194,7 +197,7 @@ export class UI {
         <div class="joy l live" aria-label="Left stick, up down and turn"><div class="joy-base"><i class="ph ph-caret-up a-n"></i><i class="ph ph-caret-down a-s"></i><i class="ph ph-arrow-counter-clockwise a-w"></i><i class="ph ph-arrow-clockwise a-e"></i><b class="knob"></b></div><span class="lbl-fly">UP, DOWN, TURN</span><span class="lbl-build">MOVE</span></div>
         <div class="joy r live" aria-label="Right stick, forward back and sideways"><div class="joy-base"><i class="ph ph-caret-up a-n"></i><i class="ph ph-caret-down a-s"></i><i class="ph ph-caret-left a-w"></i><i class="ph ph-caret-right a-e"></i><b class="knob"></b></div><span class="lbl-fly">FORWARD, BACK, SIDEWAYS</span><span class="lbl-build">LOOK</span></div>
         <div class="tbtns">
-          <button data-t="spray" aria-label="Spray"><i class="ph ph-drop"></i></button>
+          <button data-t="spray" aria-label="Water on or off" aria-pressed="false"><i class="ph ph-drop"></i></button>
           <button data-t="cam" aria-label="Camera"><i class="ph ph-video-camera"></i></button>
           <button data-t="mode" aria-label="Flight mode"><i class="ph ph-gauge"></i></button>
           <button data-t="thermal" aria-label="Thermal"><i class="ph ph-thermometer-hot"></i></button>
@@ -219,6 +222,7 @@ export class UI {
       <button data-p="invite" class="mp-only">Invite friends <i class="ph ph-link"></i></button>
       <button data-p="race" class="mp-only">Start race <i class="ph ph-flag-checkered"></i></button>
       <button data-p="hangar">Change drone <i class="ph ph-drone"></i></button>
+      <button data-p="build">Edit course <i class="ph ph-pencil-simple-line"></i></button>
       <button data-p="settings">Settings <i class="ph ph-sliders"></i></button>
       <button data-p="menu">Main menu <i class="ph ph-house"></i></button></div></div></div>`);
     this.resultEl = el(`<div class="overlay live" inert><div class="box" role="dialog" aria-modal="true" aria-label="Result"></div></div>`);
@@ -238,6 +242,7 @@ export class UI {
       if (p === 'settings') { this.openSheet('settings'); }
       if (p === 'invite') this.squad.copyInvite();
       if (p === 'race') { this.resume(); g.mp?.startRace(); }
+      if (p === 'build') { this.resume(); g.enterBuild(); }
     });
 
     this.squad = new SquadUI(g, this.root, t => this.toast(t), () => { this.closeSheets(); if (g.state !== 'fly') g.startFreeFlight(); });
@@ -257,6 +262,7 @@ export class UI {
     for (const b of $$('.mp-only', this.pauseEl)) b.hidden = !g.mp;
     // restarting a build session means nothing
     $('[data-p=restart]', this.pauseEl).hidden = g.state === 'build';
+    $('[data-p=build]', this.pauseEl).hidden = g.state !== 'fly';
     $('[data-p=race]', this.pauseEl).hidden = !g.mp || g.state !== 'fly' || !g.mp.isHost();
     if (!on) this.closeSheets();
     this.syncInert();
@@ -294,7 +300,8 @@ export class UI {
     set(this.pauseEl, !this.pauseEl.classList.contains('open'));
     set(this.resultEl, !this.resultEl.classList.contains('open'));
     set(this.build, st !== 'build');
-    set(this.touch, !this.touch.classList.contains('on'));
+    const covered = this.pauseEl.classList.contains('open') || this.resultEl.classList.contains('open') || Object.values(this.sheets).some(s => s.classList.contains('open'));
+    set(this.touch, !this.touch.classList.contains('on') || covered);
     const a = document.activeElement as HTMLElement | null;
     if (a && a !== document.body && a.closest('[inert]')) a.blur();
   }
@@ -348,7 +355,7 @@ export class UI {
     body.innerHTML = `<p class="note">Each mission trains one real skill. Solar Shift, Facade Pro and Hotspot Hunt are the jobs DroneShine pilots fly every week. ${total} of ${this.g.missions.length * 3} stars earned.</p>`;
     for (const m of this.g.missions) {
       const st = p.stars[m.id] ?? 0;
-      const best = p.best[m.id];
+      const best = m.scored === 'percent' ? undefined : p.best[m.id];
       const spec = featured(m.drone);
       const row = el(`
         <div class="mission">
@@ -428,7 +435,8 @@ export class UI {
         if (!looksLikeDrone(raw)) throw 0;
         const spec = validateSpec(raw);
         if (spec.glb) { try { await parseGlb(spec.glb); } catch { spec.glb = undefined; this.toast('The model inside could not be read, using a built body'); } }
-        if (this.custom.some(c => c.id === spec.id) && !confirm(`${spec.name} is already in your hangar. Replace it?`)) return;
+        const existing = this.custom.find(c => c.id === spec.id);
+        if (existing && !confirm(`This file replaces ${existing.name} in your hangar with ${spec.name}. Continue?`)) return;
         await saveCustomDrone(spec); await this.loadCustom(); this.toast(`${spec.name} imported`);
       } catch { this.toast('That file is not a DRONE ON drone'); }
     }));
@@ -463,7 +471,7 @@ export class UI {
   private leaveEditor() {
     clearTimeout(this.previewTimer);
     this.editing = null;
-    if (this.g.spec !== this.g.chosenSpec) this.g.setDrone(this.g.chosenSpec);
+    this.g.setDrone(this.g.chosenSpec);
     this.openSheet('hangar');
   }
 
@@ -472,8 +480,10 @@ export class UI {
     const body = $('.body', this.sheets.editor);
     const num = (k: string, label: string, v: number, min: number, max: number, step: number, unit = '', help = '') =>
       `<div class="field"><label for="f-${k}">${label}<output data-u="${unit}">${v}${unit}</output></label><input id="f-${k}" type="range" data-k="${k}" min="${min}" max="${max}" step="${step}" value="${v}" />${help ? `<span class="help" data-help="${k}">${help}</span>` : ''}</div>`;
+    const logNum = (k: string, label: string, v: number, min: number, max: number, unit = '', help = '') =>
+      `<div class="field"><label for="f-${k}">${label}<output data-u="${unit}">${sig(v)}${unit}</output></label><input id="f-${k}" type="range" data-k="${k}" data-log="1" min="${Math.log10(min)}" max="${Math.log10(max)}" step="0.001" value="${Math.log10(v)}" />${help ? `<span class="help" data-help="${k}">${help}</span>` : ''}</div>`;
     body.innerHTML = `
-      <p class="note">Every value drives the physics. The drone on the pad updates as you change it, so you can see your model at real scale next to ours.</p>
+      <p class="note">Every value drives the physics.<span class="wide-only"> The drone on the pad updates as you change it, so you can see your model at real scale next to ours.</span></p>
       <h3 class="group-h">Identity</h3>
       <div class="fields">
         <div class="field"><label for="f-name">Name</label><input id="f-name" type="text" data-k="name" maxlength="32" value="${esc(s.name)}" /></div>
@@ -494,17 +504,17 @@ export class UI {
       <h3 class="group-h">Airframe</h3>
       <div class="fields">
         <div class="field"><label for="f-layout">Motor layout</label><select id="f-layout" data-k="layout">${[['quadX', 'Quad X'], ['hexX', 'Hex X'], ['octoX', 'Octo X'], ['coaxX8', 'Coaxial X8']].map(([v, l]) => `<option value="${v}" ${s.layout === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-        ${num('mass', 'Take off mass, empty', s.mass, 0.015, 200, 0.005, ' kg')}
+        ${logNum('mass', 'Take off mass, empty', s.mass, 0.015, 200, ' kg')}
         ${num('armLength', 'Arm length, centre to motor', s.armLength, 0.02, 2, 0.005, ' m')}
         ${num('propDiameter', 'Prop diameter', s.propDiameter, 0.02, 2, 0.005, ' m', `${(s.propDiameter / 0.0254).toFixed(1)} inch`)}
         ${num('dragArea', 'Drag area', s.dragArea, 0.001, 2, 0.001, ' m²')}
       </div>
       <h3 class="group-h">Power</h3>
       <div class="fields">
-        ${num('maxThrust', 'Max thrust per motor', s.maxThrust, 0.05, 2000, 0.05, ' N', `${(s.maxThrust / 9.81).toFixed(2)} kg per motor`)}
+        ${logNum('maxThrust', 'Max thrust per motor', s.maxThrust, 0.05, 2000, ' N', `${(s.maxThrust / 9.81).toFixed(2)} kg per motor`)}
         ${num('motorTau', 'Motor spool time', s.motorTau, 0.01, 0.4, 0.005, ' s', 'Big props spin up slowly')}
         ${num('battery.cells', 'Battery cells', s.battery.cells, 1, 24, 1, ' S')}
-        ${num('battery.capacityAh', 'Battery capacity', s.battery.capacityAh, 0.1, 100, 0.1, ' Ah')}
+        ${logNum('battery.capacityAh', 'Battery capacity', s.battery.capacityAh, 0.1, 100, ' Ah')}
       </div>
       <h3 class="group-h">Flight</h3>
       <div class="fields">
@@ -533,9 +543,11 @@ export class UI {
       const v = validateSpec({ ...s, glb: undefined });
       const d = derive(v);
       const raised = v.maxThrust > s.maxThrust + 1e-6;
+      // hover current in C: what the pack must deliver just to hang in the air
+      const cRate = d.hoverMin > 0 ? 0.85 * 60 / d.hoverMin : 99;
       calc.innerHTML = `
-        <div class="fact"><b class="${d.tw < 1.5 ? 'bad' : ''}">${d.tw.toFixed(2)}</b><span>THRUST TO WEIGHT${raised ? ', RAISED SO IT CAN HOVER' : d.tw < 1.5 ? ', LOW' : ''}</span></div>
-        <div class="fact"><b>${d.hoverMin.toFixed(1)} min</b><span>HOVER TIME, CALCULATED</span></div>
+        <div class="fact"><b class="${d.tw < 1.4 ? 'bad' : ''}">${d.tw.toFixed(2)}</b><span>THRUST TO WEIGHT${raised ? ', RAISED SO IT CAN HOVER' : d.tw < 1.4 ? ', LOW' : ''}</span></div>
+        <div class="fact"><b class="${cRate > 30 ? 'bad' : ''}">${d.hoverMin.toFixed(1)} min</b><span>HOVER TIME, CALCULATED${cRate > 30 ? ', BATTERY TOO SMALL TO LIFT THIS' : ''}</span></div>
         <div class="fact"><b>${(v.armLength * 2000).toFixed(0)} mm</b><span>WHEELBASE, MOTOR TO MOTOR</span></div>
         <div class="fact"><b>${fmtMass(d.weight)}</b><span>TAKE OFF MASS${v.tool === 'sprayDown' ? ', FULL TANK' : ''}</span></div>`;
     };
@@ -544,7 +556,7 @@ export class UI {
       const path = k.split('.');
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let o: any = s; for (let i = 0; i < path.length - 1; i++) o = o[path[i]];
-      const v = t.type === 'checkbox' ? t.checked : ['name', 'author', 'tagline', 'color', 'accent', 'layout', 'defaultMode', 'tool'].includes(k) ? t.value : Number(t.value);
+      const v = t.type === 'checkbox' ? t.checked : ['name', 'author', 'tagline', 'color', 'accent', 'layout', 'defaultMode', 'tool'].includes(k) ? t.value : t.dataset.log ? sigNum(10 ** Number(t.value)) : Number(t.value);
       o[path[path.length - 1]] = v;
     };
     // one handler, replaced on every render, so nothing ever stacks up
@@ -553,10 +565,11 @@ export class UI {
       const k = t.dataset.k; if (!k) return;
       set(k, t);
       const out = t.parentElement?.querySelector('output');
-      if (out) out.textContent = t.value + (out.dataset.u ?? '');
+      const val = t.dataset.log ? sigNum(10 ** Number(t.value)) : Number(t.value);
+      if (out) out.textContent = (t.dataset.log ? sig(val) : t.value) + (out.dataset.u ?? '');
       const help = body.querySelector<HTMLElement>(`[data-help="${k}"]`);
-      if (help && k === 'propDiameter') help.textContent = `${(Number(t.value) / 0.0254).toFixed(1)} inch`;
-      if (help && k === 'maxThrust') help.textContent = `${(Number(t.value) / 9.81).toFixed(2)} kg per motor`;
+      if (help && k === 'propDiameter') help.textContent = `${(val / 0.0254).toFixed(1)} inch`;
+      if (help && k === 'maxThrust') help.textContent = `${(val / 9.81).toFixed(2)} kg per motor`;
       if (k === 'tool') {
         if (s.tool === 'sprayDown') { s.tank ??= 10; s.flow ??= 4; }
         if (s.tool === 'lance') s.flow ??= 4;
@@ -575,7 +588,11 @@ export class UI {
       if (f.size > 25e6) { this.toast('Keep models under 25 MB'); return; }
       const url = await readFileAs(f, 'dataURL');
       try { await parseGlb(url); }
-      catch (err) { this.toast(`That model could not be read. ${(err as Error)?.message ?? ''}`.trim()); return; }
+      catch (err) {
+        const msg = String((err as Error)?.message ?? '');
+        this.toast(/binary glTF|no meshes/i.test(msg) ? `That model could not be used: ${msg.charAt(0).toLowerCase() + msg.slice(1)}` : 'That model could not be read. Export it again as a binary glTF (.glb) file');
+        return;
+      }
       if (this.editing !== s) return;
       s.glb = url; s.glbScale = 1; s.glbYaw = 0; s.glbOffsetY = 0;
       this.toast('Model loaded');
@@ -642,6 +659,7 @@ export class UI {
       <h3 class="group-h">Camera</h3>
       <div class="fields">
         ${range('fpvFov', 'FPV field of view', st.fpvFov, 70, 140, 1, '°')}
+        <p class="help dim field wide" style="font-size:12.5px">Racers use the full value. Gimbal cameras stay at 82° or less, so the props stay out of the picture.</p>
         ${range('fov', 'Chase field of view', st.fov, 40, 100, 1, '°')}
         ${range('camUptilt', 'FPV uptilt override', st.camUptilt ?? g.spec.camUptilt, -30, 60, 1, '°')}
       </div>
@@ -733,6 +751,7 @@ export class UI {
       ${ok ? `<div class="result-stars" aria-label="${r.stars} of 3 stars">${[0, 1, 2].map(i => `<i class="${i < r.stars ? 'ph-fill ph-star on' : 'ph ph-star'}"></i>`).join('')}</div>` : ''}
       <div class="score">${esc(r.score)}</div>
       <p class="result-detail">${esc(r.detail)}</p>
+      ${ok && r.best && m.scored !== 'percent' ? `<p class="dim" style="margin-top:4px">${r.best === r.time ? 'New best' : `Best ${r.best.toFixed(1)} s`}</p>` : ''}
       <div class="acts">
         <button class="btn go" data-r="retry"><i class="ph ph-arrow-counter-clockwise"></i>Retry</button>
         ${ok && idx < g.missions.length - 1 ? '<button class="btn line" data-r="next">Next mission <i class="ph ph-arrow-right"></i></button>' : ''}
@@ -759,7 +778,7 @@ export class UI {
       btn.blur();
     });
     const nameEl = $<HTMLInputElement>('.map-name', b);
-    nameEl.addEventListener('input', () => { g.builder.map.name = nameEl.value.trim().slice(0, 40) || 'Untitled'; });
+    nameEl.addEventListener('input', () => { g.builder.map.name = nameEl.value.trim().slice(0, 40) || 'Untitled'; g.builder.onChanged?.(); });
     nameEl.addEventListener('keydown', e => { if (e.key === 'Enter') nameEl.blur(); });
     nameEl.addEventListener('change', () => g.builder.onChanged?.());
     $('.top', b).addEventListener('click', async e => {
@@ -782,7 +801,9 @@ export class UI {
         this.pickFile('.json', async f => {
           try {
             if (f.size > 5e6) throw 0;
-            const m = JSON.parse(await readFileAs(f, 'text'));
+            const m = sanitizeMap(JSON.parse(await readFileAs(f, 'text')));
+            if (!m) throw 0;
+            if (!m.pieces.length) { this.toast('That map has no usable pieces, your course stays as it is'); return; }
             if (!g.builder.load(m, { emit: true, origin: g.mp ? 'room' : 'own' })) throw 0;
             g.resetRace();
             this.syncBuildBar(); nameEl.value = g.builder.map.name;
@@ -803,7 +824,8 @@ export class UI {
     const g = this.g;
     $$('[data-piece]', this.build).forEach(x => x.classList.toggle('on', x.dataset.piece === g.builder.selected));
     const race = $('[data-b=race] span', this.build); if (race) race.textContent = g.builder.map.race ? 'Race on' : 'Race off';
-    $('.count', this.build).innerHTML = `${g.builder.map.pieces.length} pieces<br>${g.builder.checkpoints().length} checkpoints<br>height ${g.builder.lift.toFixed(1)} m, size ${g.builder.scale.toFixed(1)}`;
+    const n = g.builder.map.pieces.length, c = g.builder.checkpoints().length;
+    $('.count', this.build).innerHTML = `${n} ${n === 1 ? 'piece' : 'pieces'}<br>${c} ${c === 1 ? 'checkpoint' : 'checkpoints'}<br>height ${g.builder.lift.toFixed(1)} m, size ${g.builder.scale.toFixed(1)}`;
     const nameEl = $<HTMLInputElement>('.map-name', this.build);
     if (document.activeElement !== nameEl && nameEl.value !== g.builder.map.name) nameEl.value = g.builder.map.name;
   }
@@ -852,7 +874,8 @@ export class UI {
         const up = (ev: PointerEvent) => { if (ev.pointerId !== e.pointerId) return; off(); b.classList.remove('on'); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); };
         addEventListener('pointerup', up); addEventListener('pointercancel', up);
       };
-      if (t === 'spray') hold(() => { g.input.touchSpray = true; }, () => { g.input.touchSpray = false; });
+      // the water switch latches: both thumbs stay on the sticks while it sprays
+      if (t === 'spray') { g.input.touchSpray = !g.input.touchSpray; audio.tick(); }
       if (t === 'cam') key('KeyC'); if (t === 'mode') key('KeyM'); if (t === 'thermal') key('KeyH'); if (t === 'reset') key('KeyR');
       if (t === 'tag') g.input.touchTag = true;
       if (tb === 'place') g.input.uiClick = 0;
@@ -885,10 +908,12 @@ export class UI {
     const flying = st === 'fly' || st === 'mission';
     const hw = g.input.device === 'gamepad' || g.input.device === 'rc';
     const want = coarse() || g.settings.joystick;
-    const on = !hw && want && (flying || (st === 'build' && coarse()));
+    const on = (flying && (coarse() || (want && !hw))) || (st === 'build' && coarse());
     this.touch.classList.toggle('on', on);
+    this.touch.classList.toggle('hw', hw);
     this.touch.classList.toggle('building', st === 'build');
-    this.hud.classList.toggle('joy-on', on && flying);
+    this.hud.classList.toggle('joy-on', on && flying && !hw);
+    this.hud.classList.toggle('touch-on', on && flying);
     if (st === 'build' && on) { g.input.touch.left.y = 0; g.input.touch.left.x = 0; }
     this.syncKnobs();
     this.touch.inert = !on;
@@ -928,6 +953,18 @@ export class UI {
     }
   }
 
+  // ================================================================ graphics lost
+  private glEl: HTMLElement | null = null;
+  private glNotice(st: string) {
+    if (st === 'restored') { this.glEl?.remove(); this.glEl = null; return; }
+    if (this.glEl) return;
+    this.glEl = el(`<div class="gl-lost live" role="alert"><h2>Graphics paused</h2><p>The browser took the graphics away for a moment. DRONE ON picks up where you were as soon as it gives them back.</p><button class="btn line" type="button" hidden>Reload the game</button></div>`);
+    this.root.append(this.glEl);
+    const btn = $('button', this.glEl);
+    btn.addEventListener('click', () => location.reload());
+    setTimeout(() => { if (this.glEl) btn.hidden = false; }, 5000);
+  }
+
   // ================================================================ toasts
   toast(text: string) {
     const t = el(`<div class="toast enter">${esc(text)}</div>`);
@@ -957,7 +994,7 @@ export class UI {
     }
     h.innerHTML = lines.join('<br>');
     const how = $('.how', this.crashEl);
-    how.textContent = dev === 'touch' ? 'Tap the reset button to try again' : dev === 'gamepad' ? 'Press Back to reset' : dev === 'rc' ? 'Tap reset or press R' : 'Press R to reset';
+    how.textContent = coarse() && dev !== 'keyboard' ? 'Tap the reset button to try again' : dev === 'gamepad' ? 'Press Back to reset' : 'Press R to reset';
   }
 
   // ================================================================ per frame HUD
@@ -1013,6 +1050,8 @@ export class UI {
     }
     $('.cross', hud).classList.toggle('on', t.thermal || (t.cam === 'fpv' && g.spec.tool === 'thermal'));
     $('.thermal-bar', hud).classList.toggle('on', t.thermal);
+    const sprayBtn = $('[data-t=spray]', this.touch);
+    if (sprayBtn.classList.contains('on') !== g.input.touchSpray) { sprayBtn.classList.toggle('on', g.input.touchSpray); sprayBtn.setAttribute('aria-pressed', String(g.input.touchSpray)); }
     // mission objectives
     const objEl = $('.objectives', hud);
     const mn = $('.mission-name', hud);
@@ -1028,9 +1067,12 @@ export class UI {
       const p = g.project(g.markerPos.clone().add(new THREE.Vector3(0, 3.6, 0)));
       ml.hidden = p.behind;
       if (!p.behind) {
-        const topBand = innerWidth < 761 ? 150 : 120;
-        ml.style.left = Math.max(70, Math.min(innerWidth - 70, p.x)) + 'px';
-        ml.style.top = Math.max(topBand, Math.min(innerHeight - 140, p.y)) + 'px';
+        const portrait = innerWidth < 761 && innerHeight > 520;
+        const sticks = this.hud.classList.contains('joy-on');
+        const topBand = portrait ? 170 : innerHeight <= 520 ? 110 : 150;
+        const bottom = sticks ? (innerHeight <= 520 ? innerHeight - 150 : innerHeight - 330) : innerHeight - 140;
+        ml.style.left = Math.max(90, Math.min(innerWidth - (portrait ? 130 : 90), p.x)) + 'px';
+        ml.style.top = Math.max(topBand, Math.min(bottom, p.y)) + 'px';
         ml.innerHTML = `<b>${esc(g.markerLabel)}</b>${g.sim.pos.distanceTo(g.markerPos).toFixed(0)} m`;
       }
     } else ml.hidden = true;
@@ -1038,6 +1080,10 @@ export class UI {
     else $('.why', this.crashEl).textContent = t.crashReason;
   }
 }
+
+/** three significant digits: 0.0223 kg, 1.25 kg, 712 N */
+function sigNum(v: number) { return Number(v.toPrecision(3)); }
+function sig(v: number) { return String(sigNum(v)); }
 
 function fmtTime(s: number) { const m = Math.floor(s / 60); return `${m}:${String(Math.floor(s % 60)).padStart(2, '0')}`; }
 

@@ -200,7 +200,7 @@ export class World {
             t = col ? 0.35 + 0.15 * (1 - (col.r + col.g + col.b) / 3) : 0.4;
           }
           if (o.name === 'terrain') t = 0.33;
-          this.thermalSwap.set(mesh, mesh.material);
+          if (!this.thermalSwap.has(mesh)) this.thermalSwap.set(mesh, mesh.material);
           mesh.material = thermalMat(t);
         }
         for (const c of o.children) visit(c, temp);

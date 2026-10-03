@@ -333,9 +333,23 @@ function wordmarkMesh(w: number, h: number) {
 
 const gltf = new GLTFLoader();
 
-// parsed uploads, keyed by the data URL: slider tweaks in the editor must not re-parse a 20 MB model
+// parsed uploads, keyed by the whole data URL (the engine hashes a string once), so two models of the
+// same size never mix up and slider tweaks in the editor never re-parse a 20 MB model
 const glbCache = new Map<string, Promise<THREE.Group>>();
-function glbKey(url: string) { return url.length + ':' + url.slice(0, 64) + url.slice(-64); }
+
+/** free a cached model that fell out of the cache */
+function disposeCached(p: Promise<THREE.Group>) {
+  p.then(scene => scene.traverse(o => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    m.geometry?.dispose();
+    for (const mat of Array.isArray(m.material) ? m.material : [m.material]) {
+      if (!mat) continue;
+      for (const val of Object.values(mat)) if (val && (val as THREE.Texture).isTexture) (val as THREE.Texture).dispose();
+      mat.dispose();
+    }
+  })).catch(() => { /* never parsed */ });
+}
 
 function dataUrlBytes(url: string): ArrayBuffer {
   const b64 = url.slice(url.indexOf(',') + 1);
@@ -347,7 +361,7 @@ function dataUrlBytes(url: string): ArrayBuffer {
 
 /** Parse a binary glTF from a data URL. Rejects anything that is not a real GLB. */
 export function parseGlb(url: string): Promise<THREE.Group> {
-  const key = glbKey(url);
+  const key = url;
   let p = glbCache.get(key);
   if (!p) {
     p = (async () => {
@@ -363,7 +377,11 @@ export function parseGlb(url: string): Promise<THREE.Group> {
     })();
     glbCache.set(key, p);
     p.catch(() => glbCache.delete(key));
-    while (glbCache.size > 4) glbCache.delete(glbCache.keys().next().value!);
+    while (glbCache.size > 4) {
+      const oldest = glbCache.keys().next().value!;
+      disposeCached(glbCache.get(oldest)!);
+      glbCache.delete(oldest);
+    }
   }
   return p;
 }

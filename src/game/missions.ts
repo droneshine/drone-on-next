@@ -41,6 +41,8 @@ export interface Mission {
   result(ctx: MissionCtx): MissionResult;
   failReason?: string;
   hud?(ctx: MissionCtx): string;
+  /** percent scored missions keep no best time */
+  scored?: 'time' | 'percent';
   /** remove anything the mission added to the world */
   cleanup?(world: World): void;
 }
@@ -142,7 +144,7 @@ function solarShift(): Mission {
   ];
   let phase = 0;
   return {
-    id: 'solar-shift', title: 'Solar Shift', skill: 'Contactless cleaning', drone: 'dsolar', lockDrone: true,
+    id: 'solar-shift', title: 'Solar Shift', skill: 'Contactless cleaning', drone: 'dsolar', lockDrone: true, scored: 'percent',
     brief: 'The real DSolar job. 30 litres of demineralised water, three soiled rows. Hold Space or A to spray. Three to four metres above the glass gives the widest clean lane, any lower and the spray footprint shrinks.',
     wind: { speed: 2.5, dir: 60, gust: 0.25 },
     spawn: (w) => ({ pos: w.pads[0].clone(), yaw: 0 }),
@@ -180,7 +182,7 @@ function solarShift(): Mission {
 
 // ------------------------------------------------------------------ 4
 function facadePro(): Mission {
-  let clean = 0, timer = 0, sample = 0;
+  let clean = 0, sample = 0;
   const objs: Objective[] = [{ text: 'Clean 70 % of the dirty work zone', done: false }, { text: 'No more than 3 touches on the building', done: true }];
   let touches = 0;
   let lastTouch = 0;
@@ -190,7 +192,7 @@ function facadePro(): Mission {
     wind: { speed: 2, dir: 270, gust: 0.3 },
     spawn: (w) => ({ pos: w.facade.pumpAnchor.clone().add(new THREE.Vector3(6, -2.2, 0)), yaw: -Math.PI / 2 }),
     start(ctx) {
-      clean = 0; timer = 0; touches = 0; objs[0].done = false; objs[1].done = true;
+      clean = 0; touches = 0; lastTouch = -10; objs[0].done = false; objs[1].done = true;
       ctx.world.facade.resetGrime();
       const f = ctx.world.facade;
       ctx.marker(f.zoneCenter(), 'Work zone');
@@ -200,11 +202,11 @@ function facadePro(): Mission {
     },
     update(ctx, dt) {
       if (ctx.sim.crashed) { this.failReason = 'DShine crashed into the building.'; return 'fail'; }
-      timer += dt; sample += dt;
+      sample += dt;
       if (sample > 0.5) { sample = 0; clean = ctx.world.facade.cleanliness(); }
       if (touches > 3) { objs[1].done = false; this.failReason = 'Too many touches. A real client would call that damage.'; return 'fail'; }
       if (clean >= 0.7) { objs[0].done = true; return 'success'; }
-      if (timer > 600) { this.failReason = 'Out of time.'; return 'fail'; }
+      if (ctx.time > 600) { this.failReason = 'Out of time.'; return 'fail'; }
       return 'running';
     },
     objectives: () => objs,
@@ -322,7 +324,7 @@ function turbineRun(): Mission {
   const objs: Objective[] = [{ text: 'Hover within 15 m of the nacelle for 10 s', done: false }, { text: 'Return home with more than 20 % battery', done: false }];
   const nacelle = new THREE.Vector3(-330, 96, -279);
   return {
-    id: 'turbine', title: 'Turbine Run', skill: 'Battery planning', drone: 'dscan',
+    id: 'turbine', title: 'Turbine Run', skill: 'Battery planning', drone: 'dscan', scored: 'percent',
     brief: 'The turbine is half a kilometre away and the blades are turning. Hold a 10 second inspection next to the nacelle without touching the rotor, then come home before the pack runs low.',
     wind: { speed: 5, dir: 45, gust: 0.4 },
     spawn: (w) => ({ pos: w.pads[0].clone(), yaw: 0.85 }),

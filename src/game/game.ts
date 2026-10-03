@@ -97,6 +97,9 @@ const thermalShader = {
     }`,
 };
 
+/** a stored best lap, only when it is a real positive number */
+function goodLap(v: unknown) { return typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 36000 ? v : 0; }
+
 export class Game {
   renderer: THREE.WebGLRenderer;
   composer: EffectComposer;
@@ -155,6 +158,7 @@ export class Game {
   private autosaveTimer = 0;
   contextLost = false;
   private resizeQueued = false;
+  private lastDevice = '';
 
   constructor(canvas: HTMLCanvasElement) {
     this.settings = sanitizeSettings(getLS<Partial<Settings>>('settings', {}));
@@ -203,11 +207,19 @@ export class Game {
     canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); this.contextLost = true; audio.silence(); this.emit('gl', 'lost'); });
     canvas.addEventListener('webglcontextrestored', () => {
       this.contextLost = false;
-      this.world.setTime(this.world.currentTime);
+      const thermal = this.world.thermal;
+      try {
+        if (thermal) this.world.setThermal(false);
+        this.world.setTime(this.world.currentTime);
+        if (thermal) this.world.setThermal(true, this.visual ? [this.visual.root] : []);
+      } catch (e) { console.error(e); }
       this.resize();
       this.emit('gl', 'restored');
     });
     audio.setVolume(this.settings.volume);
+    // the last edit survives a closed tab or a reload right after it
+    addEventListener('pagehide', () => this.flushAutosave());
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.flushAutosave(); });
   }
 
   private pixelRatio() { return Math.min(devicePixelRatio, this.settings.quality === 'high' ? 1.75 : 1.25); }
@@ -266,7 +278,7 @@ export class Game {
       if (this.visual) { this.world.scene.remove(this.visual.root); disposeVisual(this.visual); }
       this.world.scene.add(visual.root);
     }
-    if (this.hose) { this.world.scene.remove(this.hose.mesh); this.hose.mesh.geometry.dispose(); this.hose = null; }
+    if (this.hose) { this.world.scene.remove(this.hose.mesh); this.hose.mesh.geometry.dispose(); (this.hose.mesh.material as THREE.Material).dispose(); this.hose = null; }
     this.spec = spec;
     this.visual = visual;
     this.sim = new DroneSim(spec, this.world.colliders);
@@ -307,6 +319,7 @@ export class Game {
 
   resetDrone() {
     this.sim.reset(this.home, this.homeYaw);
+    this.input.touchSpray = false;
     this.tank = this.spec.tool === 'sprayDown' ? (this.spec.tank ?? 10) : null;
     this.sim.payload = this.tank ?? 0;
     this.input.setThrottleRest(this.input.throttleSprings);
@@ -350,7 +363,7 @@ export class Game {
   }
 
   setMode(m: FlightMode) {
-    this.sim.mode = m;
+    this.sim.setMode(m);
     this.input.throttleSprings = m === 'gps';
     // switching in the air: throttle continues at hover, on the ground it rests at the bottom
     if (m !== 'gps') this.input.setKeyboardThrottle(this.sim.armed ? 0.5 : 0);
@@ -386,7 +399,7 @@ export class Game {
     this.builder.active = false; this.builder.hideGhost();
     if (map !== undefined) {
       if (!this.builder.load(map, { origin: 'shared' })) { this.toast('That course link is damaged, loading your own course'); this.loadOwnCourse(); }
-    } else if (!this.mp && (this.builder.origin !== 'own' || !this.builder.map.pieces.length)) {
+    } else if (!this.builder.loaded || (!this.mp && this.builder.origin !== 'own')) {
       // FLY from the menu is your own course; a friend's link only lasts for that flight
       this.loadOwnCourse();
     }
@@ -405,7 +418,10 @@ export class Game {
   }
 
   /** start pad, spread out per seat in a squad so nobody spawns inside another drone */
-  private spawnPoint(): { pos: THREE.Vector3; yaw: number } {
+  /** back to this pilot's start slot, e.g. when the squad seat is known */
+  respawn() { const sp = this.spawnPoint(); this.setHome(sp.pos, sp.yaw); this.resetDrone(); }
+
+  spawnPoint(): { pos: THREE.Vector3; yaw: number } {
     const start = this.builder.startPad() ?? { pos: this.world.pads[1].clone(), yaw: 0 };
     if (!this.mp) return start;
     const slot = this.mp.seat();
@@ -421,7 +437,7 @@ export class Game {
     const cps = this.builder.checkpoints();
     this.raceTracker = this.builder.map.race && cps.length >= 2 ? new RingTracker(cps) : null;
     this.raceRunning = false; this.raceTime = 0; this.raceIdx = 0; this.raceCount = cps.length;
-    this.raceBest = getLS<Record<string, number>>('raceBest', {})[this.builder.signature()] ?? 0;
+    this.raceBest = goodLap(getLS<Record<string, unknown>>('raceBest', {})[this.builder.signature()]);
     if (this.state === 'fly') this.setMarker(this.raceTracker ? cps[0].pos : null, this.raceTracker ? 'Gate 1' : '');
   }
 
@@ -489,7 +505,7 @@ export class Game {
     this.paused = false;
     this.state = 'build';
     // your own island: shared courses are for flying, building always happens on your own course
-    if (!this.mp && (this.builder.origin !== 'own' || !this.builder.map.pieces.length)) this.loadOwnCourse();
+    if (!this.builder.loaded || (!this.mp && this.builder.origin !== 'own')) this.loadOwnCourse();
     if (!this.visualLoaded) await this.setDrone(this.spec);
     this.builder.active = true;
     this.builder.setGhost(this.builder.selected);
@@ -541,6 +557,7 @@ export class Game {
   private tick(dt: number) {
     const inp = this.input;
     inp.update(dt);
+    if (inp.device !== this.lastDevice) { this.lastDevice = inp.device; this.sim?.requireLowThrottle(); }
     const flying = this.state === 'fly' || this.state === 'mission';
     if (flying && !this.paused) this.handleFlightKeys();
     if (this.state === 'build' && !this.paused) this.handleBuild(dt);
@@ -640,6 +657,10 @@ export class Game {
     const wants = inp.keys.has('Space') || (pad?.buttons[0]?.pressed ?? false) || (inp.device === 'rc' && (pad?.axes[5] ?? -1) > 0.3) || inp.touchSpray;
     // only a drone with a working sprayer sprays: no tank, no hiss
     const canSpray = this.spec.tool === 'lance' || (this.spec.tool === 'sprayDown' && (this.tank ?? 0) > 0);
+    if (inp.touchSpray && (this.sim.crashed || !canSpray)) {
+      inp.touchSpray = false;
+      if (this.spec.tool === 'sprayDown' && !this.sim.crashed) this.toast('Tank empty. Land on the start pad to refill');
+    }
     this.spraying = wants && canSpray && this.sim.armed && !this.sim.crashed;
     this.tagPressed = inp.hit('KeyF') || inp.padHit(2) || inp.touchTag;
     inp.touchTag = false;
@@ -711,6 +732,10 @@ export class Game {
     if (!this.sim.armed) return;
     if (soc < 0.2 && this.batteryWarned > 0.2) { this.batteryWarned = 0.2; audio.warn(); this.toast('Battery 20 %. Time to head home.'); }
     if (soc < 0.1 && this.batteryWarned > 0.1) { this.batteryWarned = 0.1; audio.warn(); this.toast('Battery critical. Land now.'); }
+    if (this.sim.autoLanding && soc >= 0.05 && this.batteryWarned > 0.06) {
+      this.batteryWarned = 0.06; audio.warn();
+      this.toast('The pack can no longer carry this weight. Landing now.');
+    }
     if (soc < 0.05 && this.batteryWarned > 0.05) {
       this.batteryWarned = 0.05; audio.warn();
       this.toast(this.sim.mode === 'gps' ? 'Battery empty. Landing automatically.' : 'Battery empty. Motors are fading.');
@@ -747,7 +772,7 @@ export class Game {
         const t = this.raceTime;
         const key = this.builder.signature();
         const bests = getLS<Record<string, number>>('raceBest', {});
-        const prev = bests[key];
+        const prev = goodLap(bests[key]);
         if (!prev || t < prev) { bests[key] = t; setLS('raceBest', bests); this.raceBest = t; this.toast(`New best lap ${t.toFixed(2)} s`); audio.success(); }
         else this.toast(`Lap ${t.toFixed(2)} s. Best ${prev.toFixed(2)} s`);
         this.raceTracker = new RingTracker(this.builder.checkpoints());
@@ -772,9 +797,11 @@ export class Game {
       if (st === 'success') {
         const p = progress();
         p.stars[this.mission.id] = Math.max(p.stars[this.mission.id] ?? 0, res.stars);
-        const prevBest = p.best[this.mission.id];
-        if (res.time > 0 && (!prevBest || res.time < prevBest)) p.best[this.mission.id] = res.time;
-        res.best = p.best[this.mission.id];
+        if (this.mission.scored !== 'percent') {
+          const prevBest = p.best[this.mission.id];
+          if (res.time > 0 && (!prevBest || res.time < prevBest)) p.best[this.mission.id] = res.time;
+          res.best = p.best[this.mission.id];
+        }
         saveProgress(p);
         audio.success();
       } else if (!this.sim.crashed) audio.warn();
@@ -823,8 +850,8 @@ export class Game {
     const pad = inp.device === 'gamepad' ? inp.activePad() : null;
     const dz = (v: number | undefined) => (v != null && Math.abs(v) > 0.15 ? v : 0);
     if (pad) {
-      this.freeYaw -= dz(pad.axes[2]) * dt * 2;
-      this.freePitch = THREE.MathUtils.clamp(this.freePitch - dz(pad.axes[3]) * dt * 2, -1.5, 1.5);
+      this.freeYaw -= dz(inp.axis(2)) * dt * 2;
+      this.freePitch = THREE.MathUtils.clamp(this.freePitch - dz(inp.axis(3)) * dt * 2, -1.5, 1.5);
     }
     const T = inp.touch;
     if (inp.device === 'touch' && T.right.active) {
@@ -839,7 +866,7 @@ export class Game {
     if (k.has('KeyW')) mv.add(fwd); if (k.has('KeyS')) mv.sub(fwd);
     if (k.has('KeyD')) mv.add(right); if (k.has('KeyA')) mv.sub(right);
     if (k.has('KeyE') || k.has('Space')) mv.y += 1; if (k.has('KeyQ')) mv.y -= 1;
-    if (pad) { mv.addScaledVector(fwd, -dz(pad.axes[1])); mv.addScaledVector(right, dz(pad.axes[0])); }
+    if (pad) { mv.addScaledVector(fwd, -dz(inp.axis(1))); mv.addScaledVector(right, dz(inp.axis(0))); }
     if (inp.device === 'touch' && T.left.active) { mv.addScaledVector(fwd, T.left.y); mv.addScaledVector(right, T.left.x); }
     if (inp.touchBuildLift) mv.y += inp.touchBuildLift;
     this.camPos.addScaledVector(mv, sp);
@@ -849,8 +876,6 @@ export class Game {
     for (const p of PIECES) {
       const isDigit = /[0-9]/.test(p.key);
       if (inp.hit(isDigit ? 'Digit' + p.key : 'Key' + p.key) || (isDigit && inp.hit('Numpad' + p.key))) {
-        // T is chat in a squad room, the bar still selects the tree
-        if (p.key === 'T' && this.mp) continue;
         b.setGhost(p.t); this.emit('build-select', p.t);
       }
     }
@@ -862,15 +887,17 @@ export class Game {
       this.emit('build-select', b.selected);
     }
     if (inp.undoPressed) { inp.undoPressed = false; b.undoLast(); audio.tick(); }
+    const camYawDeg = Math.round(THREE.MathUtils.radToDeg(this.freeYaw) / 15) * 15;
+    b.ghostExtraYaw = b.selected === 'flag' ? camYawDeg : 0;
     const aim = b.aim(this.camera);
     const clickPlace = inp.uiClick === 0 || inp.padHit(0);
     const clickDel = inp.uiClick === 1 || inp.hit('KeyX') || inp.hit('Delete') || inp.padHit(1);
     inp.uiClick = -1;
     if (clickPlace) {
       // the start flag faces the way you are looking
-      const r = b.selected === 'flag' ? Math.round(THREE.MathUtils.radToDeg(this.freeYaw) / 15) * 15 + b.yaw : b.yaw;
+      const r = b.selected === 'flag' ? camYawDeg + b.yaw : b.yaw;
       if (b.place({ t: b.selected, x: aim.pos.x, y: aim.pos.y, z: aim.pos.z, r, s: b.scale })) audio.tick();
-      else this.toast('That spot is outside the world');
+      else this.toast(b.map.pieces.length >= 2000 ? 'This course is full: 2000 pieces is the limit' : 'That spot is outside the world');
     }
     if (clickDel && aim.hitId) { b.removeId(aim.hitId); audio.tick(); }
     if (inp.hit('KeyF') || inp.padHit(3)) { this.flushAutosave(); this.startFreeFlight(); }
@@ -910,7 +937,7 @@ export class Game {
         const e = new THREE.Euler().setFromQuaternion(s.quat, 'YXZ');
         cam.position.copy(v.fpvCam).applyQuaternion(s.quat).add(s.pos);
         cam.quaternion.setFromEuler(new THREE.Euler(THREE.MathUtils.degToRad(this.gimbalPitch), e.y, 0, 'YXZ'));
-        fov = Math.min(this.settings.fpvFov, 100);
+        fov = Math.min(this.settings.fpvFov, 82);
       }
       // camera shake from vibration and impacts
       if (s.armed) {

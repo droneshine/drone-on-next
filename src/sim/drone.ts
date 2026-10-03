@@ -57,6 +57,8 @@ export class DroneSim {
   private surfaceY = 0;
   private surfaceAge = 1;
   autoLanding = false;
+  private landT = 0;
+  private satT = 0;
   impactListeners: ((speed: number, surface: string) => void)[] = [];
   /** contact with another pilot's drone: their id and our velocity along the contact normal */
   bumpListeners: ((peerId: string, normal: THREE.Vector3, speed: number) => void)[] = [];
@@ -101,12 +103,21 @@ export class DroneSim {
     this.iRate.set(0, 0, 0);
     this.crashed = false; this.crashReason = '';
     this.armed = false; this.holding = false; this.altHolding = false;
-    this.armReady = false; this.lowThrottleT = 0; this.autoLanding = false;
+    this.armReady = false; this.lowThrottleT = 0; this.autoLanding = false; this.landT = 0; this.satT = 0;
     this.soc = 1; this.energyWh = 0; this.maxImpact = 0;
     this.voltage = this.vFilt = this.cellOcv(1) * this.spec.battery.cells;
     this.onGround = true;
     this.surfaceAge = 1;
   }
+
+  /** A new mode or controller never inherits an old low stick: arming needs a fresh one. */
+  setMode(m: FlightMode) {
+    if (m === this.mode) return;
+    this.mode = m;
+    if (!this.armed) this.armReady = false;
+    this.holding = false; this.altHolding = false;
+  }
+  requireLowThrottle() { if (!this.armed) this.armReady = false; }
 
   heading() {
     _v.set(0, 0, -1).applyQuaternion(this.quat);
@@ -200,11 +211,19 @@ export class DroneSim {
         let vzDes = Math.abs(tIn) > 0.06 ? tIn * spec.maxClimb * (tIn < 0 ? 0.8 : 1) : 0;
         if (Math.abs(tIn) <= 0.06 && this.armed && !this.autoLanding) {
           // capture the height where the drone will actually stop, not where the stick was released
-          if (!this.altHolding) { this.altHolding = true; this.holdAlt = this.pos.y + this.vel.y * 0.35; }
+          if (!this.altHolding) {
+            // hold where the drone can actually stop: braking distance from the current climb or sink rate
+            const vy = this.vel.y;
+            const aStop = vy > 0 ? 0.55 * G : Math.max(2, ((n * tMaxEff) / (m * G) - 1) * G * 0.6);
+            this.altHolding = true;
+            this.holdAlt = this.pos.y + Math.sign(vy) * Math.min(25, (vy * vy) / (2 * aStop));
+          }
           vzDes = (this.holdAlt - this.pos.y) * 1.5;
         } else this.altHolding = false;
         // nearly empty battery: GPS drones land themselves, like real ones do
-        if (this.soc < 0.05 && this.armed) { this.autoLanding = true; vzDes = Math.min(vzDes, -1.2); }
+        // or earlier, when a sagging pack can no longer carry the weight with margin
+        if (this.armed && !this.autoLanding && (this.soc < 0.05 || this.satT > 1.2 || ((m * G - this.extraForce.y) / (n * tMaxEff) > 0.86 && this.soc < 0.4))) this.autoLanding = true;
+        if (this.autoLanding) vzDes = Math.min(vzDes, -1.2);
         // descent limited by what the motors can brake, then a slow final approach over any surface
         if (vzDes < 0) {
           const twEff = (n * tMaxEff) / (m * G);
@@ -227,6 +246,12 @@ export class DroneSim {
         const bodyUp = _v.set(0, 1, 0).applyQuaternion(this.quat);
         collective = Math.max(0, F.length() * Math.max(0.3, bodyUp.dot(upDes)));
         if (!this.armed) collective = 0;
+        if (this.armed && collective > 0.96 * n * tMaxEff) this.satT += dt; else this.satT = Math.max(0, this.satT - dt);
+        // touchdown: ground effect can float a heavy drone a few cm over the pad, so low and still counts as landed
+        if (this.armed && (sticks.throttle < 0.35 || this.autoLanding) && this.agl < 0.12 && Math.abs(this.vel.y) < 0.25) {
+          this.landT += dt;
+          if (this.landT > 0.6) { this.armed = false; collective = 0; }
+        } else this.landT = 0;
         // on the ground with throttle low, stay down, spool down and disarm
         if (this.onGround && (sticks.throttle < 0.55 || this.autoLanding) && this.vel.y <= 0.05) {
           collective = 0;
@@ -375,7 +400,8 @@ export class DroneSim {
   private throttleToThrust(t: number, tMaxEff: number) {
     const c = Math.max(0, Math.min(1, t));
     if (!this.throttleCurveHover) return Math.max(0.0, c * c * 0.92 + c * 0.08);
-    const h = Math.min(0.9, (this.totalMass * G) / (this.motors.length * Math.max(1e-6, tMaxEff)));
+    // centre stick hovers with everything that pulls the drone down, the hose included
+    const h = Math.min(0.9, (this.totalMass * G - Math.min(0, this.extraForce.y)) / (this.motors.length * Math.max(1e-6, tMaxEff)));
     if (c < 0.5) return h * Math.pow(c / 0.5, 1.6);
     return h + (1 - h) * Math.pow((c - 0.5) / 0.5, 1.4);
   }

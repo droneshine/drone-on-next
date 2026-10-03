@@ -27,7 +27,17 @@ export async function listCustomDrones(): Promise<DroneSpec[]> {
   return new Promise(res => {
     const tx = d.transaction(STORE, 'readonly');
     const q = tx.objectStore(STORE).getAll();
-    q.onsuccess = () => res((q.result as unknown[]).map(validateSpec));
+    q.onsuccess = () => {
+      const raw = q.result as { id?: unknown }[];
+      const out = raw.map(r => {
+        const v = validateSpec(r);
+        // drones saved before ids were checked (a featured id, odd characters): move them to their clean id once,
+        // so Delete and Save always find the same record
+        if (typeof r?.id === 'string' && r.id !== v.id) { void saveCustomDrone(v).then(() => deleteCustomDrone(r.id as string)); }
+        return v;
+      });
+      res(out);
+    };
     q.onerror = () => res([]);
   });
 }

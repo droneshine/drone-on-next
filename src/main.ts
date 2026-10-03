@@ -7,6 +7,7 @@ import type { DroneSpec } from './sim/spec';
 import { listCustomDrones } from './game/store';
 import { audio } from './audio/audio';
 import { roomFromHash } from './ui/mpui';
+import { sanitizeMap } from './game/builder';
 
 const bar = document.querySelector<HTMLElement>('.boot-bar i')!;
 const step = (p: number) => { bar.style.setProperty('--p', String(p)); };
@@ -67,11 +68,13 @@ async function boot() {
     // dev only: QA rigs in tools/ render with the same THREE instance
     if (import.meta.env.DEV) (window as unknown as { THREE: unknown }).THREE = THREE;
     game.start();
-    const shared = await mapFromHash();
+    const raw = await mapFromHash();
+    // a friend's course only counts when at least one piece survives the checks
+    const shared = raw ? sanitizeMap(raw) : null;
     await game.enterMenu();
     if (roomFromHash()) setTimeout(() => ui.openSheet('squad'), 200);
-    else if (shared) {
-      game.toast(`Shared course: ${String((shared as { name?: unknown }).name ?? 'Shared course').slice(0, 40)}`);
+    else if (shared && shared.pieces.length) {
+      game.toast(`Shared course: ${shared.name}`);
       await game.startFreeFlight(shared);
     } else if (/map=/.test(location.hash)) game.toast('That course link is damaged');
   } catch (e) {

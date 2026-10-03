@@ -122,8 +122,16 @@ export class FacadeBlock {
 
   pumpAnchor: THREE.Vector3;
 
-  /** fresh dirt for a new attempt */
-  resetGrime() { this.paintGrime(); this.tex.needsUpdate = true; }
+  private pristine: ImageData | null = null;
+  private dirty = false;
+
+  /** fresh dirt for a new attempt: the painted original is kept, so a reset is a single copy */
+  resetGrime() {
+    if (!this.dirty) return;
+    if (this.pristine) this.ctx.putImageData(this.pristine, 0, 0); else this.paintGrime();
+    this.dirty = false;
+    this.tex.needsUpdate = true;
+  }
 
   private paintGrime() {
     const g = this.ctx, W = this.W, H = this.H;
@@ -149,6 +157,7 @@ export class FacadeBlock {
       sum += d;
     }
     g.putImageData(img, 0, 0);
+    this.pristine = img;
     this.initSum = sum;
   }
 
@@ -171,6 +180,7 @@ export class FacadeBlock {
 
   /** Clean with a soft round footprint. radius in metres. */
   cleanAt(p: THREE.Vector3, radius: number, strength: number) {
+    this.dirty = true;
     const c = this.toPx(p);
     const pxPerM = this.W / (this.z1 - this.z0);
     const r = radius * pxPerM;

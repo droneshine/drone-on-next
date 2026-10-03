@@ -227,6 +227,13 @@ export class Input {
 
   setKeyboardThrottle(v: number) { this.kbThrottle = v; }
 
+  /** a pad axis relative to where it rests, so a throttle parked at -1 reads 0 */
+  axis(i: number) {
+    const p = this.activePad();
+    if (!p) return 0;
+    return (p.axes[i] ?? 0) - (this.padRest?.[i] ?? 0);
+  }
+
   /** end of frame: clear edge state */
   endFrame() { this.pressed.clear(); this.mouseDX = 0; this.mouseDY = 0; this.wheel = 0; this.undoPressed = false; }
 

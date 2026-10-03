@@ -162,9 +162,10 @@ export function buildFreestyle(cw: ColliderWorld) {
     [cx - 42, 14, cz + 22, 160], [cx - 50, 18, cz - 8, 180], [cx - 35, 22, cz - 35, 220], [cx - 5, 26, cz - 45, 270],
     [cx + 22, 16, cz - 40, 300], [cx + 40, 8, cz - 25, 320], [cx + 55, 4, cz - 8, 350], [cx + 72, 3, cz - 2, 0],
   ];
-  path.forEach(([x, y, z, yaw], i) => {
-    // ring planes face along the course: the path yaw is clockwise, three.js yaw counter clockwise
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, THREE.MathUtils.degToRad(-yaw), 0));
+  path.forEach(([x, y, z], i) => {
+    // each ring faces along the line from the ring before to the ring after it, so the loop flows
+    const [px, , pz] = path[(i - 1 + path.length) % path.length], [nx, , nz] = path[(i + 1) % path.length];
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, Math.atan2(nx - px, nz - pz), 0));
     const m = new THREE.Mesh(ringGeo, ringMat.clone());
     m.position.set(x, y + heightAt(x, z), z); m.quaternion.copy(q);
     m.castShadow = true;

@@ -88,6 +88,9 @@ export class Particles {
   clear() { this.life.fill(0); this.size.fill(0); this.alive = 0; this.lastNext = -1; this.geo.attributes.aSize.needsUpdate = true; }
 }
 
+const RADIAL = 6, HOSE_R = 0.022;
+const _hd = new THREE.Vector3(), _ht = new THREE.Vector3(), _hn = new THREE.Vector3(), _hb = new THREE.Vector3(), _hdir = new THREE.Vector3();
+
 export class Hose {
   n = 48;
   pts: THREE.Vector3[] = [];
@@ -95,6 +98,8 @@ export class Hose {
   length: number;
   mesh: THREE.Mesh;
   private seg: number;
+  private posA: Float32Array;
+  private nrmA: Float32Array;
   force = new THREE.Vector3();
   maxForce = 300;
 
@@ -106,7 +111,20 @@ export class Hose {
       p.y = heightAt(p.x, p.z) + 0.05;
       this.pts.push(p); this.prev.push(p.clone());
     }
-    this.mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ color: '#e6e3d8', roughness: 0.5 }));
+    // one tube mesh for the life of the hose: rings of vertices around every rope point, rewritten in place
+    const R = RADIAL + 1, N = this.n;
+    this.posA = new Float32Array(N * R * 3);
+    this.nrmA = new Float32Array(N * R * 3);
+    const idx: number[] = [];
+    for (let i = 0; i < N - 1; i++) for (let j = 0; j < RADIAL; j++) {
+      const a = i * R + j, b = (i + 1) * R + j, c = (i + 1) * R + j + 1, d = i * R + j + 1;
+      idx.push(a, b, d, b, c, d);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(this.posA, 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setAttribute('normal', new THREE.BufferAttribute(this.nrmA, 3).setUsage(THREE.DynamicDrawUsage));
+    geo.setIndex(idx);
+    this.mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: '#e6e3d8', roughness: 0.5 }));
     this.mesh.castShadow = true;
     this.mesh.frustumCulled = false;
     this.mesh.userData.temp = 0.4;
@@ -134,7 +152,7 @@ export class Hose {
     for (let it = 0; it < 12; it++) {
       for (let i = 0; i < this.n - 1; i++) {
         const a = this.pts[i], b = this.pts[i + 1];
-        const d = b.clone().sub(a); const len = d.length() || 1e-6;
+        const d = _hd.subVectors(b, a); const len = d.length() || 1e-6;
         // rope: only resists stretching
         if (len < this.seg) continue;
         const diff = (len - this.seg) / len;
@@ -167,9 +185,29 @@ export class Hose {
   }
 
   private rebuild() {
-    const curve = new THREE.CatmullRomCurve3(this.pts);
-    const old = this.mesh.geometry;
-    this.mesh.geometry = new THREE.TubeGeometry(curve, this.n * 2, 0.022, 6, false);
-    old.dispose();
+    const N = this.n, R = RADIAL + 1, P = this.posA, Nr = this.nrmA;
+    const t = _ht, nrm = _hn, bin = _hb, dir = _hdir;
+    for (let i = 0; i < N; i++) {
+      t.subVectors(this.pts[Math.min(i + 1, N - 1)], this.pts[Math.max(i - 1, 0)]);
+      if (t.lengthSq() < 1e-10) t.set(0, 0, 1);
+      t.normalize();
+      // parallel transport: carry the ring orientation along the rope so the tube never twists
+      if (i === 0) { nrm.set(0, 1, 0); if (Math.abs(t.y) > 0.9) nrm.set(1, 0, 0); }
+      nrm.addScaledVector(t, -nrm.dot(t));
+      if (nrm.lengthSq() < 1e-10) nrm.set(t.z, 0, -t.x);
+      nrm.normalize();
+      bin.crossVectors(t, nrm);
+      const p = this.pts[i];
+      for (let j = 0; j < R; j++) {
+        const a = (j / RADIAL) * Math.PI * 2;
+        dir.copy(nrm).multiplyScalar(Math.cos(a)).addScaledVector(bin, Math.sin(a));
+        const k = (i * R + j) * 3;
+        P[k] = p.x + dir.x * HOSE_R; P[k + 1] = p.y + dir.y * HOSE_R; P[k + 2] = p.z + dir.z * HOSE_R;
+        Nr[k] = dir.x; Nr[k + 1] = dir.y; Nr[k + 2] = dir.z;
+      }
+    }
+    const g = this.mesh.geometry;
+    g.attributes.position.needsUpdate = true;
+    g.attributes.normal.needsUpdate = true;
   }
 }

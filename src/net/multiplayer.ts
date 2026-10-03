@@ -16,14 +16,18 @@ import { audio } from '../audio/audio';
 // relays, gameplay data goes directly between browsers (WebRTC).
 //
 // Trust model: nothing that arrives is trusted. Every message is type checked
-// and clamped, only the host may start or stop races or hand out the course,
-// and the host is the pilot who has been in the room longest.
+// and clamped, only the host may start or stop races or hand out the course.
+// Host: every hello carries who the sender thinks hosts. A newcomer adopts the
+// room's host; a room nobody hosts yet settles on the smallest pilot id; two
+// different claims resolve to the smaller id. Everybody ends up agreeing.
 
 const APP_ID = 'droneon-by-droneshine-v1';
 const SEND_HZ = 20;
 const PARKED_HZ = 2;
 const DELAY = 0.1;              // interpolation delay in seconds
 const HIDE_AFTER = 2;           // silent pilots vanish and stop colliding
+const SETTLE = 3;               // a new pilot listens this long for the room's host before electing one
+const HELLO_EVERY = 5;          // repeated hellos let split rooms converge on one host
 const DROP_AFTER = 15;          // and leave the room for good
 const RESULTS_FOR = 7;          // results stay up, then free flight timing resumes
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -32,7 +36,7 @@ const F_SPRAY = 1, F_CRASH = 2, F_ARMED = 4, F_PARKED = 8;
 
 /** x y z qx qy qz qw motor flags raceIdx raceTime senderMs gimbal */
 type State = number[];
-interface Hello { name: string; spec: DroneSpec; color: string; age: number; ask?: boolean; }
+interface Hello { name: string; spec: DroneSpec; color: string; host?: string | null; hostAge?: number; ask?: boolean; }
 type RaceMsg =
   | { op: 'start'; inMs: number; grid: string[]; spacing: number }
   | { op: 'finish'; time: number }
@@ -51,7 +55,6 @@ export interface RemotePilot {
   samples: { t: number; s: State }[];
   /** local time minus sender time, smallest seen, so jitter never pulls a drone backwards */
   offset: number | null;
-  joinedAt: number;
   raceIdx: number;
   raceTime: number;
   finished: number | null;
@@ -121,8 +124,14 @@ export class Multiplayer {
   private aChat: MessageAction<string>;
   private aBump: MessageAction<number[]>;
   private sendAcc = 0;
-  private joinedAt = now();
   private colors = new Map<string, string>();
+  /** who hosts: null until this pilot has heard from the room or settled */
+  host: string | null = null;
+  /** local time since which the room has had this host, carried over from whoever we adopted it from */
+  private hostSince = 0;
+  private settleAt = now() + SETTLE;
+  private lastHello = now();
+  private colorPicked = false;
   private boundSim: DroneSim | null = null;
   private bumpFn = (id: string, n: THREE.Vector3, speed: number) => this.onLocalBump(id, n, speed);
   private needsCourse = false;
@@ -154,7 +163,7 @@ export class Multiplayer {
     this.aRace = this.room.makeAction<string>('rc');
     this.aChat = this.room.makeAction<string>('ch');
     this.aBump = this.room.makeAction<number[]>('bp');
-    this.color = this.colorOf(selfId);
+    this.color = PILOT_COLORS[hashIdx(selfId)];
 
     this.room.onPeerJoin = (id) => { this.aHello.send(JSON.stringify(this.hello()), { target: id }); };
     this.room.onPeerLeave = (id) => {
@@ -184,16 +193,31 @@ export class Multiplayer {
 
   get selfId() { return selfId; }
 
-  /** everyone in the room ordered by how long they have been here, oldest first */
-  private order(): string[] {
-    const all: { id: string; at: number }[] = [{ id: selfId, at: this.joinedAt }];
-    // a pilot whose tab went quiet cannot host or hold a seat
-    for (const p of this.pilots.values()) if (this.clock - p.lastSeen <= HIDE_AFTER) all.push({ id: p.id, at: p.joinedAt });
-    // half a second counts as a tie so two pilots joining together agree on a host
-    return all.sort((a, b) => (Math.abs(a.at - b.at) > 0.5 ? a.at - b.at : a.id < b.id ? -1 : 1)).map(x => x.id);
-  }
-  hostId() { return this.order()[0]; }
+  /** everyone in the room in the same order on every screen */
+  private order(): string[] { return [selfId, ...this.pilots.keys()].sort(); }
+  hostId() { return this.host ?? this.order()[0]; }
   isHost() { return this.hostId() === selfId; }
+
+  private setHost(id: string, age = 0) {
+    if (this.host === id) return;
+    this.host = id;
+    this.hostSince = this.clock - age;
+    // a guest takes the host's course; the host keeps its own
+    if (id !== selfId) this.aBuild.send(JSON.stringify({ op: 'want' }), { target: id });
+    this.pickColor();
+    this.announce();
+    this.emit('pilots');
+  }
+
+  /** settle on a colour nobody else in the room shows, then tell everyone */
+  private pickColor() {
+    if (this.colorPicked) return;
+    this.colorPicked = true;
+    const used = new Set([...this.pilots.values()].map(p => p.color));
+    if (!used.has(this.color)) return;
+    const free = PILOT_COLORS.find(c => !used.has(c));
+    if (free) this.color = free;
+  }
   /** spawn slot in free flight: joining never moves somebody who is already here */
   seat() { return Math.max(0, this.order().indexOf(selfId)); }
   /** spacing that fits the biggest drone in the room */
@@ -208,7 +232,7 @@ export class Multiplayer {
   private hello(ask = false): Hello {
     const s = { ...this.game.spec };
     delete s.glb;                       // models can be megabytes, peers rebuild from the spec
-    return { name: this.name, spec: s, color: this.color, age: now() - this.joinedAt, ask };
+    return { name: this.name, spec: s, color: this.color, host: this.host, hostAge: this.host ? this.clock - this.hostSince : 0, ask };
   }
 
   /** call after the local drone or name changes */
@@ -221,23 +245,33 @@ export class Multiplayer {
     const name = String(h.name ?? 'Pilot').replace(/\s+/g, ' ').trim().slice(0, 18) || 'Pilot';
     let p = this.pilots.get(id);
     const isNew = !p;
+    const color = typeof h.color === 'string' && PILOT_COLORS.includes(h.color) ? h.color : PILOT_COLORS[hashIdx(id)];
     if (!p) {
-      const age = fin(h.age) ? Math.max(0, Math.min(86400, h.age)) : 0;
       p = {
-        id, name, color: '', spec, visual: null, collider: null, samples: [], offset: null,
-        joinedAt: now() - age, raceIdx: 0, raceTime: 0, finished: null, dnf: false, crashed: false, spraying: false, parked: true,
+        id, name, color, spec, visual: null, collider: null, samples: [], offset: null,
+        raceIdx: 0, raceTime: 0, finished: null, dnf: false, crashed: false, spraying: false, parked: true,
         pos: new THREE.Vector3(0, -999, 0), lastSeen: this.clock, lastBump: 0, buildToken: 0,
       };
       this.pilots.set(id, p);
-      p.color = this.colorOf(id);
       // greet back so both sides know each other even if one hello was lost
       this.aHello.send(JSON.stringify(this.hello()), { target: id });
-      // only the host hands out the course, and only to pilots who arrived after it
-      if (this.isHost() && p.joinedAt > this.joinedAt) this.sendCourse(id);
     } else {
       p.lastSeen = this.clock;
+      p.color = color;
       if (p.name !== name) { this.say(`${p.name} is now ${name}`); p.name = name; }
       if (h.ask) this.aHello.send(JSON.stringify(this.hello()), { target: id });
+    }
+    // host claims: adopt the room's host, or resolve two claims to the smaller id
+    const claim = typeof h.host === 'string' && (h.host === selfId || this.pilots.has(h.host)) ? h.host : null;
+    if (claim) {
+      const theirs = fin(h.hostAge) ? Math.max(0, Math.min(86400, h.hostAge)) : 0;
+      if (!this.host) this.setHost(claim, theirs);
+      else if (claim !== this.host && (this.host === selfId || this.pilots.has(this.host))) {
+        // the longer standing host wins, so a newcomer never takes over a running room; near ties go to the smaller id
+        const mine = this.clock - this.hostSince;
+        const takeTheirs = Math.abs(mine - theirs) < 2 ? claim < this.host : theirs > mine;
+        if (takeTheirs) this.setHost(claim, theirs);
+      }
     }
     if (isNew || p.spec.id !== spec.id || p.spec.name !== spec.name || p.spec.layout !== spec.layout || p.spec.armLength !== spec.armLength) {
       p.spec = spec;
@@ -296,6 +330,8 @@ export class Multiplayer {
     this.pilots.delete(id);
     this.colors.delete(id);
     if (this.grid.delete(id)) this.checkWinner();
+    // the host left: the smallest id still here takes over, the same on every screen
+    if (this.host === id) this.setHost(this.order()[0]);
     this.emit('pilots');
   }
 
@@ -310,7 +346,11 @@ export class Multiplayer {
       const m = sanitizeMap(op.map);
       if (!m) return;
       if (g.courseBeforeMission) g.courseBeforeMission = { map: m, origin: 'room' };
-      else { g.builder.load(m, { origin: 'room' }); if (this.raceState === 'idle') g.resetRace(); }
+      else {
+        g.builder.load(m, { origin: 'room' });
+        if (this.raceState === 'idle') g.resetRace();
+        if (g.state === 'fly' && g.sim && !g.sim.armed && g.sim.onGround) g.respawn();
+      }
       this.needsCourse = false;
       this.say(`Course: ${m.name}`);
       this.emit('build');
@@ -332,6 +372,7 @@ export class Multiplayer {
   // ------------------------------------------------------------------ race
   startRace() {
     const g = this.game;
+    this.clock = now();
     if (!this.isHost()) { g.toast('Only the host can start the race'); return; }
     if (this.raceState === 'countdown' || this.raceState === 'running') { g.toast('A race is already on'); return; }
     if (!g.builder.map.race) { g.toast('Race is switched off for this course. Turn it on in Build'); return; }
@@ -353,6 +394,7 @@ export class Multiplayer {
 
   private onRace(m: RaceMsg, from: string) {
     const g = this.game;
+    this.clock = now();
     if (m.op === 'start') {
       if (from !== this.hostId()) return;
       if (!Array.isArray(m.grid) || !fin(m.inMs) || !fin(m.spacing)) return;
@@ -392,6 +434,9 @@ export class Multiplayer {
       const p = this.pilots.get(from);
       if (!p || !this.grid.has(from) || p.finished != null || (this.raceState !== 'running' && this.raceState !== 'countdown')) return;
       if (!fin(m.time) || m.time <= 0 || m.time > 3600) return;
+      // a finish must match the time since GO on this screen, give or take network and frame delays
+      const since = this.clock - (this.raceState === 'countdown' ? this.countdownEnd : this.raceStart);
+      if (Math.abs(m.time - since) > 5) return;
       p.finished = Math.round(m.time * 100) / 100;
       this.say(`${p.name} finished in ${p.finished.toFixed(2)} s`);
       this.checkWinner();
@@ -447,6 +492,9 @@ export class Multiplayer {
   }
 
   colorOf(id: string) {
+    if (id === selfId) return this.color;
+    const p = this.pilots.get(id);
+    if (p?.color) return p.color;
     const have = this.colors.get(id);
     if (have) return have;
     // first come keeps its colour; later pilots take the next free one
@@ -514,6 +562,12 @@ export class Multiplayer {
   update(dt: number) {
     this.clock = now();
     const g = this.game;
+    if (!this.host && this.clock > this.settleAt) {
+      this.setHost(this.order()[0]);
+      // seat and start pad are known now: line up properly if still on the ground
+      if (g.state === 'fly' && g.sim && !g.sim.armed && g.sim.onGround) g.respawn();
+    }
+    if (this.pilots.size && this.clock - this.lastHello > HELLO_EVERY) { this.lastHello = this.clock; this.announce(); }
     if (g.sim !== this.boundSim) {
       if (this.boundSim) this.boundSim.bumpListeners = this.boundSim.bumpListeners.filter(f => f !== this.bumpFn);
       this.boundSim = g.sim ?? null;

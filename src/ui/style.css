@@ -438,3 +438,42 @@ input[type=color] { width: 100%; height: 42px; border-radius: var(--r); border: 
 @media (max-height: 960px) and (min-width: 761px) { .lede { display: none; } .title { margin-top: 14px; } }
 /* the build top bar wraps into two rows below about 1140 px: help and counters move down with it */
 @media (max-width: 1140px) and (min-width: 761px) { .build .help, .build .count { top: 124px; } .squad.building .squad-box { top: 270px; } }
+
+/* ------------------------------------------------------------------ round 2 layout and contrast */
+/* an RC or gamepad flies: the on screen sticks go, Pause, Reset, Camera and Mode stay on a touch screen */
+.touch.hw .joy { display: none; }
+.tpause { top: 14px; right: 18px; }
+.hud.touch-on .tr { right: 76px; }
+.thermal-bar .grad { height: 160px; }
+.thermal-bar { top: 42%; }
+.mode-chip span.armed { color: var(--lg); }
+.hud .tl, .hud .tr, .hud .bl, .hud .tc, .objectives div, .marker-label { text-shadow: 0 1px 2px rgba(0, 20, 12, 0.9), 0 0 14px rgba(0, 20, 12, 0.75); }
+.build .help, .build .count { background: rgba(0, 28, 18, 0.62); padding: 8px 12px; border-radius: 8px; }
+.drone-row h3 small { overflow-wrap: anywhere; min-width: 0; }
+@media (min-width: 761px) { .spec-line { max-width: min(48vw, calc(100vw - 830px)); } }
+@media (pointer: coarse) { .build .bar button kbd { display: none; } }
+.gl-lost { position: absolute; inset: 0; z-index: 7; display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center; padding: 24px; background: rgba(0, 24, 15, 0.92); }
+.gl-lost h2 { font-family: var(--display); font-weight: 400; font-size: 30px; }
+.gl-lost p { color: var(--dim); max-width: 44ch; line-height: 1.55; }
+@media (max-width: 760px) {
+  .wide-only { display: none; }
+  .build .top [data-b=export], .build .top [data-b=import] { display: none; }
+  .build .top input { min-width: 0; flex: 1 1 120px; }
+  .crash h2 { font-size: 44px; }
+  .crash p { max-width: 64vw; margin-left: auto; margin-right: auto; }
+}
+@media (max-width: 760px) and (min-height: 521px) {
+  .tpause { top: auto; bottom: 166px; right: 14px; }
+  .hud.touch-on .tr { right: 14px; }
+  .touch.building .joy span { display: none; }
+  .touch.building .tbuild { bottom: 270px; }
+  .build .count { display: block; top: 112px; right: 14px; font-size: 11.5px; }
+}
+@media (max-height: 520px) {
+  .tpause { top: 10px; right: 16px; }
+  .crash { place-content: start center; padding-top: 22vh; }
+  .build .bar { bottom: 12px; max-width: calc(100vw - 300px); }
+  .touch.building .joy span { display: none; }
+  .touch.building .tbuild { left: auto; right: 14px; transform: none; bottom: 148px; grid-auto-flow: row; grid-template-columns: repeat(4, 40px); gap: 6px; }
+  .touch.building .tbuild button { width: 40px; height: 40px; font-size: 18px; }
+}

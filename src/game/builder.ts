@@ -9,7 +9,8 @@ import { COL } from '../world/props';
 
 export type PieceType = 'ring' | 'bigring' | 'gate' | 'cube' | 'platform' | 'ramp' | 'pillar' | 'wall' | 'container' | 'panels' | 'tree' | 'flag';
 
-export interface Piece { t: PieceType; x: number; y: number; z: number; r: number; s: number; id?: string; }
+/** c: when it was placed (ms), so every pilot in a squad agrees on the checkpoint order */
+export interface Piece { t: PieceType; x: number; y: number; z: number; r: number; s: number; id?: string; c?: number; }
 export interface MapData { v: 1; name: string; author: string; pieces: Piece[]; race: boolean; }
 
 export const PIECES: { t: PieceType; label: string; key: string }[] = [
@@ -120,6 +121,7 @@ export function sanitizePiece(raw: unknown): Piece | null {
     t: r.t as PieceType, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, z: Math.round(z * 100) / 100,
     r: ((Math.round(rot) % 360) + 360) % 360, s: Math.min(4, Math.max(0.4, sc)),
     id: typeof r.id === 'string' && /^[a-z0-9]{1,16}$/i.test(r.id) ? r.id : uid(),
+    ...(typeof r.c === 'number' && Number.isFinite(r.c) && r.c > 0 && r.c < 1e14 ? { c: Math.round(r.c) } : {}),
   };
 }
 
@@ -160,6 +162,10 @@ export class Builder {
   private hover: THREE.BoxHelper | null = null;
   private hoverId: string | null = null;
   selected: PieceType = 'ring';
+  /** extra ghost rotation, the start flag follows the camera */
+  ghostExtraYaw = 0;
+  /** true once any course has been loaded */
+  loaded = false;
   yaw = 0; lift = 0; scale = 1;
   active = false;
   private undo: UndoOp[] = [];
@@ -209,6 +215,7 @@ export class Builder {
     this.map = { ...m, pieces: [] };
     for (const p of m.pieces) this.add(p);
     if (opts.origin) this.origin = opts.origin;
+    this.loaded = true;
     this.undo = [];
     this.onChanged?.();
     return true;
@@ -219,6 +226,7 @@ export class Builder {
     const p = sanitizePiece(raw);
     if (!p || this.map.pieces.length >= 2000) return null;
     if (this.built.has(p.id!)) p.id = uid();
+    if (p.c == null && opts.record !== false) p.c = Date.now();
     this.add(p, opts.index);
     if (opts.record !== false) this.undo.push({ kind: 'placed', id: p.id! });
     if (opts.emit !== false) this.onOp?.({ op: 'place', p, index: opts.index });
@@ -242,7 +250,10 @@ export class Builder {
     if (!op) return;
     if (op.kind === 'placed') this.removeId(op.id, { record: false });
     else if (op.kind === 'removed') this.place(op.piece, { record: false, index: op.index });
-    else this.load(op.map, { emit: true });
+    else {
+      this.map.name = op.map.name;
+      for (const p of op.map.pieces) this.place(p, { record: false, emit: true });
+    }
   }
 
   /** Apply an edit that came from another pilot. */
@@ -257,7 +268,9 @@ export class Builder {
 
   checkpoints() {
     const out: NonNullable<Built['checkpoint']>[] = [];
-    for (const p of this.map.pieces) { const c = this.built.get(p.id!)?.checkpoint; if (c) out.push(c); }
+    // order by placement time, ties by id, so concurrent edits give the same course everywhere
+    const order = this.map.pieces.map((p, i) => ({ p, k: p.c ?? i })).sort((a, b) => a.k - b.k || (a.p.id! < b.p.id! ? -1 : a.p.id! > b.p.id! ? 1 : 0));
+    for (const { p } of order) { const c = this.built.get(p.id!)?.checkpoint; if (c) out.push(c); }
     return out;
   }
 
@@ -330,7 +343,7 @@ export class Builder {
     const hitId = hit.c && hit.c.tag === 'build' ? String(hit.c.data) : null;
     if (this.ghost) {
       this.ghost.position.copy(p);
-      this.ghost.rotation.y = THREE.MathUtils.degToRad(this.yaw);
+      this.ghost.rotation.y = THREE.MathUtils.degToRad(this.yaw + this.ghostExtraYaw);
       this.ghost.scale.setScalar(this.scale);
     }
     this.setHover(this.ghost ? hitId : null);
@@ -341,7 +354,7 @@ export class Builder {
 /** A starter course so the Spielwiese is never empty. */
 export function starterMap(): MapData {
   const pieces: Piece[] = [
-    { t: 'flag', x: -138, y: 0, z: 38, r: 180, s: 1 },
+    { t: 'flag', x: -138, y: 0, z: 38, r: 130, s: 1 },
   ];
   const n = 10;
   for (let i = 0; i < n; i++) {
