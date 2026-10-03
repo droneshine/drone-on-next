@@ -30,7 +30,8 @@ const DOWN = new THREE.Vector3(0, -1, 0);
  * snapshot of the static world around the pilot, rendered once instead of every frame (that alone
  * saves about 220 draw calls a frame), and the drone gets a soft contact shadow right below it,
  * which also reads better as a height cue; grass only in a small circle around the pilot; a three
- * octave cloud layer instead of twelve; fewer trees on Quest 2; fixed foveation on the edges.
+ * octave cloud layer instead of twelve; on Quest 2 every other tree far from both the pilot and
+ * the drone (near ones all stay, their colliders are real); fixed foveation on the edges.
  */
 const PROFILES = {
   low: { scale: 1.0, foveation: 1.0, grassR: 16, trees: 0.5, shadow: 1024, shadowBox: 60, rt: [1280, 720], rtSamples: 2 },
@@ -63,7 +64,7 @@ interface Saved {
   shadowSize: number;
   shadowBox: [number, number, number, number];
   clouds: { mesh: THREE.Mesh; mat: THREE.Material } | null;
-  trees: { mesh: THREE.InstancedMesh; count: number }[];
+  trees: { mesh: THREE.InstancedMesh; count: number; orig: Float32Array }[];
 }
 
 export class VrMode {
@@ -193,7 +194,7 @@ export class VrMode {
       shadowSize: w.sun.shadow.mapSize.x,
       shadowBox: [sh.left, sh.right, sh.top, sh.bottom],
       clouds: clouds ? { mesh: clouds, mat: clouds.material as THREE.Material } : null,
-      trees: this.findTrees().map(mesh => ({ mesh, count: mesh.count })),
+      trees: this.findTrees().map(mesh => ({ mesh, count: mesh.count, orig: (mesh.instanceMatrix.array as Float32Array).slice() })),
     };
     this.losSaved.copy(g.losPilot);
     this.losWritten.set(NaN, NaN, NaN);
@@ -282,11 +283,48 @@ export class VrMode {
     return m;
   }
 
-  /** the forest: big instanced meshes, thinned by drawing fewer instances (they are placed at random) */
+  /** the forest's instanced meshes (World keeps them in a private field; nothing else may be thinned) */
   private findTrees() {
+    const group = (this.g.world as unknown as { forest?: { group?: THREE.Object3D } }).forest?.group;
     const out: THREE.InstancedMesh[] = [];
-    this.g.world.scene.traverse(o => { const m = o as THREE.InstancedMesh; if (m.isInstancedMesh && m.count >= 500) out.push(m); });
+    group?.children.forEach(o => { if ((o as THREE.InstancedMesh).isInstancedMesh) out.push(o as THREE.InstancedMesh); });
     return out;
+  }
+
+  private treesAt = { pilot: new THREE.Vector3(Infinity, 0, 0), drone: new THREE.Vector3(Infinity, 0, 0), t: 0 };
+  private farTrees = 1;
+
+  /**
+   * Far trees, thinned: every tree within 150 m of the pilot or the drone is drawn (so nothing you can
+   * fly into is invisible), of the rest only a share. The instances are reordered so the drawn ones come
+   * first, and sorted again when the drone has flown 60 m on (at most once a second).
+   */
+  private thinTrees(now: number, force = false) {
+    const sv = this.saved, g = this.g;
+    if (!sv || !sv.trees.length) return;
+    // the pilot spot stays in the world in GOGGLES view too (the world rig does not move)
+    const pilot = this.head;
+    const drone = g.sim.pos;
+    const moved = Math.hypot(drone.x - this.treesAt.drone.x, drone.z - this.treesAt.drone.z) > 60 || Math.hypot(pilot.x - this.treesAt.pilot.x, pilot.z - this.treesAt.pilot.z) > 60;
+    if (!force && (!moved || now - this.treesAt.t < 1000)) return;
+    this.treesAt.pilot.copy(pilot); this.treesAt.drone.copy(drone); this.treesAt.t = now;
+    const R2 = 150 * 150, every = this.farTrees >= 1 ? 1 : Math.round(1 / this.farTrees);
+    for (const t of sv.trees) {
+      const src = t.orig, dst = t.mesh.instanceMatrix.array as Float32Array;
+      if (every === 1) { dst.set(src); t.mesh.count = t.count; t.mesh.instanceMatrix.needsUpdate = true; continue; }
+      const keep: number[] = [], skip: number[] = [];
+      let far = 0;
+      for (let i = 0; i < t.count; i++) {
+        const x = src[i * 16 + 12], z = src[i * 16 + 14];
+        const d2 = Math.min((x - pilot.x) ** 2 + (z - pilot.z) ** 2, (x - drone.x) ** 2 + (z - drone.z) ** 2);
+        if (d2 < R2 || far++ % every === 0) keep.push(i); else skip.push(i);
+      }
+      let k = 0;
+      for (const i of keep) dst.set(src.subarray(i * 16, i * 16 + 16), 16 * k++);
+      for (const i of skip) dst.set(src.subarray(i * 16, i * 16 + 16), 16 * k++);
+      t.mesh.count = keep.length;
+      t.mesh.instanceMatrix.needsUpdate = true;
+    }
   }
 
   private applyProfile() {
@@ -304,7 +342,8 @@ export class VrMode {
     // shadows: snapshots only, see render()
     this.g.renderer.shadowMap.autoUpdate = false;
     this.shadowAt = null; this.shadowT = 0;
-    for (const t of sv.trees) t.mesh.count = Math.round(t.count * p.trees);
+    this.farTrees = p.trees;
+    this.treesAt.pilot.set(Infinity, 0, 0); this.treesAt.drone.set(Infinity, 0, 0);
     this.g.world.scene.add(this.blob);
     if (sv.clouds) {
       const orig = sv.clouds.mat as THREE.ShaderMaterial;
@@ -330,7 +369,7 @@ export class VrMode {
     sh.camera.updateProjectionMatrix();
     r.shadowMap.autoUpdate = true;
     r.shadowMap.needsUpdate = true;
-    for (const t of sv.trees) t.mesh.count = t.count;
+    for (const t of sv.trees) { (t.mesh.instanceMatrix.array as Float32Array).set(t.orig); t.mesh.count = t.count; t.mesh.instanceMatrix.needsUpdate = true; }
     w.scene.remove(this.blob);
     if (sv.clouds) { sv.clouds.mesh.material = sv.clouds.mat; sv.clouds.mesh.visible = !w.thermal; }
     this.lodRestore(); this.lod.root = null;
@@ -348,7 +387,7 @@ export class VrMode {
     s.degrade++;
     if (s.degrade === 1) this.g.renderer.xr.setFoveation(1);
     else if (s.degrade === 2 && w.grass) w.grass.mesh.visible = false;
-    else if (s.degrade === 3) for (const t of this.saved?.trees ?? []) t.mesh.count = Math.round(t.count * 0.3);
+    else if (s.degrade === 3) { this.farTrees = Math.min(this.farTrees, 0.25); this.thinTrees(performance.now(), true); }
     else if (s.degrade === 4) this.lodK = 0.012;
     else if (s.degrade === 5 && this.saved?.clouds) this.saved.clouds.mesh.visible = false;
     console.info('VR quality step', s.degrade);
@@ -557,6 +596,7 @@ export class VrMode {
     if (now - this.hudT > 80) { this.hudT = now; this.updateHud(); }
     this.placeHud();
     this.placeBlob();
+    this.thinTrees(now);
     this.shadowSnapshot(now);
     const parts = g.particles.points.material as THREE.ShaderMaterial;
     if (this.view === 'pilot') {

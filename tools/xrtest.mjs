@@ -50,6 +50,8 @@ const flatState = () => {
     shadowMap: sh.mapSize.x, shadowBox: sh.camera.right, shadowAuto: r.shadowMap.autoUpdate, cloudMat: clouds?.material.uuid,
     sceneChildren: w.scene.children.length, device: g.input.device, inputXr: g.input.xr, camMode: g.camMode,
     uiDisplay: ui.root.style.display, renderTarget: r.getRenderTarget(), toneMapping: r.toneMapping, exposure: r.toneMappingExposure,
+    // every instanced mesh (solar modules, posts, trees): count and a checksum of the matrices
+    instanced: (() => { const out = []; w.scene.traverse(o => { if (o.isInstancedMesh) { const a = o.instanceMatrix.array; let c = 0; for (let i = 0; i < a.length; i += 7) c += a[i] * ((i % 13) + 1); out.push(o.count + ':' + c.toFixed(1)); } }); return out.join(' '); })(),
   };
 };
 const tele = () => { const g = window.droneon.game, s = g.sim; return { state: g.state, armed: s.armed, crashed: s.crashed, agl: +s.agl.toFixed(2), x: +s.pos.x.toFixed(2), z: +s.pos.z.toFixed(2), heading: +s.heading().toFixed(3), device: g.input.device, thr: +g.input.sticks.throttle.toFixed(2), pitch: +g.input.sticks.pitch.toFixed(2), mode: s.mode, cam: g.camMode, view: g.xr?.view, presenting: g.renderer.xr.isPresenting }; };
@@ -368,8 +370,26 @@ await shot(page, '10_menu_after');
   await p2.click('.rail [data-xr]');
   await p2.waitForFunction(() => window.droneon.game.xr?.active, { timeout: 20000 });
   await sleep(2000);
-  const prof = await p2.evaluate(() => { const g = window.droneon.game, w = g.world; const trees = []; w.scene.traverse(o => { if (o.isInstancedMesh && o.count >= 500) trees.push(o.count); }); return { ua: navigator.userAgent.match(/Quest \w+/)?.[0], grassR: w.grass.uniforms.uR.value, shadow: w.sun.shadow.mapSize.x, trees, foveation: g.renderer.xr.getFoveation() }; });
-  check('Quest 2 gets the light profile (grass 16 m, shadow 1024, half the trees, full foveation)', prof.grassR === 16 && prof.shadow === 1024 && prof.foveation === 1, JSON.stringify(prof));
+  // take off next to the woods, so there are trees near the pilot to check
+  await p2.evaluate(() => {
+    const g = window.droneon.game, T = window.THREE, a = g.world.forest.group.children[0].instanceMatrix.array;
+    const x = a[12] + 25, z = a[14];
+    g.setHome(new T.Vector3(x, g.world.colliders.heightAt(x, z) + 0.1, z), 0); g.resetDrone();
+  });
+  await sleep(2500);
+  const prof = await p2.evaluate(() => {
+    const g = window.droneon.game, w = g.world, T = window.THREE, forest = w.forest.group;
+    const trees = [], others = [];
+    w.scene.traverse(o => { if (o.isInstancedMesh) (o.parent === forest ? trees : others).push(o.count); });
+    // every tree within 150 m of the pilot must still be drawn
+    const head = new T.Vector3().setFromMatrixPosition(g.renderer.xr.getCamera().matrixWorld);
+    let near = 0, nearDrawn = 0;
+    for (const im of forest.children) { const a = im.instanceMatrix.array, n = a.length / 16; for (let i = 0; i < n; i++) { const d = Math.hypot(a[i * 16 + 12] - head.x, a[i * 16 + 14] - head.z); if (d < 140) { near++; if (i < im.count) nearDrawn++; } } }
+    const total = forest.children.reduce((n, im) => n + im.instanceMatrix.count, 0);
+    return { ua: navigator.userAgent.match(/Quest \w+/)?.[0], grassR: w.grass.uniforms.uR.value, shadow: w.sun.shadow.mapSize.x, trees, total, others, near, nearDrawn, foveation: g.renderer.xr.getFoveation() };
+  });
+  check('Quest 2 gets the light profile (grass 16 m, shadow 1024, far trees thinned, full foveation)', prof.grassR === 16 && prof.shadow === 1024 && prof.foveation === 1 && prof.trees.reduce((a, b) => a + b, 0) < prof.total * 0.8, JSON.stringify(prof));
+  check('Quest 2: solar modules and posts untouched, every tree near the pilot drawn', prof.others.includes(2400) && prof.others.includes(600) && prof.near === prof.nearDrawn, `others ${prof.others}, near trees ${prof.nearDrawn} of ${prof.near}`);
   await shot(p2, '11_vr_quest2_pilot');
   await p2.evaluate(() => window.droneon.game.xr.exit());
   await p2.waitForFunction(() => !window.droneon.game.renderer.xr.isPresenting, { timeout: 10000 });

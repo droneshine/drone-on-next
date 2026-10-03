@@ -50,12 +50,12 @@ Target: 72 fps on Quest 2, better on Quest 3. Quest 2 has 13.9 ms per frame for 
 | Sun shadows | rendered every frame, drone included | one snapshot of the static world around the pilot (around the drone in GOGGLES, refreshed when it has flown far), the drone gets a contact shadow instead. Saves about 220 draw calls a frame |
 | Drone small parts | always drawn | in PILOT, parts under 6 % of the drone's size are left out when they would be a few pixels (34 to 93 parts per drone) |
 | Grass | 75 m around the camera | same density, 16 m (Quest 2) or 24 m (Quest 3) around the pilot |
-| Trees | all | half on Quest 2 |
+| Trees | all | Quest 2: every tree within 150 m of you or the drone, every other one further out (so no tree you can fly into is ever invisible) |
 | Clouds | two six octave noise layers | one three octave layer |
 | Antialiasing | composer MSAA | 4x MSAA in the headset framebuffer, fixed foveation (full on Quest 2, half on Quest 3) |
 | Resolution and frame rate | window size | Quest 2: recommended eye buffer (scale 1.0), 72 Hz. Quest 3: scale 1.2 for a sharper picture, and after the first seconds it asks for 90 Hz when the frame has room |
 
-If frames still run long for two seconds, the game steps down on its own, in the order the eye misses least: back to 72 Hz, full foveation, no grass, fewer trees, more small drone parts left out, no clouds.
+If frames still run long for two seconds, the game steps down on its own, in the order the eye misses least: back to 72 Hz, full foveation, no grass, a quarter of the far trees, more small drone parts left out, no clouds.
 
 Measured on the studio laptop (Snapdragon X, Adreno X1 45 GPU) through the emulator, GPU work finished every frame:
 
