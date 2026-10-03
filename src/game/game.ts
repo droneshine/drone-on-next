@@ -16,6 +16,7 @@ import { allMissions, Mission, MissionCtx, MissionResult, RingTracker } from './
 import { getLS, setLS, progress, saveProgress } from './store';
 import { heightAt } from '../world/terrain';
 import type { Multiplayer } from '../net/multiplayer';
+import { withHeadsetAntialias } from '../xr/caps';
 
 export type State = 'boot' | 'menu' | 'fly' | 'mission' | 'build' | 'result';
 export type CamMode = 'chase' | 'fpv' | 'los' | 'orbit' | 'free';
@@ -159,10 +160,13 @@ export class Game {
   contextLost = false;
   private resizeQueued = false;
   private lastDevice = '';
+  /** XR hook (src/xr): while a VR session is active it drives the loop and renders the frame */
+  xr: { active: boolean; render(dt: number): void } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.settings = sanitizeSettings(getLS<Partial<Settings>>('settings', {}));
-    const r = this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false });
+    // XR hook: 4x MSAA for a VR headset framebuffer, the canvas itself stays as it is (src/xr/caps.ts)
+    const r = this.renderer = withHeadsetAntialias(() => new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', stencil: false }));
     r.setPixelRatio(this.pixelRatio());
     r.setSize(innerWidth, innerHeight);
     r.shadowMap.enabled = true;
@@ -244,6 +248,7 @@ export class Game {
   }
 
   resize() {
+    if (this.renderer.xr.isPresenting) return; // XR: the headset owns the size, src/xr resizes after the session
     this.renderer.setPixelRatio(this.pixelRatio());
     this.renderer.setSize(innerWidth, innerHeight);
     this.composer.setPixelRatio(this.pixelRatio());
@@ -316,6 +321,8 @@ export class Game {
   }
 
   setHome(pos: THREE.Vector3, yaw: number) { this.home.copy(pos); this.homeYaw = yaw; }
+  /** take off spot and heading, read by the VR pilot view (src/xr) */
+  get takeoff() { return { pos: this.home, yaw: this.homeYaw }; }
 
   resetDrone() {
     this.sim.reset(this.home, this.homeYaw);
@@ -544,14 +551,21 @@ export class Game {
   start() {
     const frame = () => {
       requestAnimationFrame(frame);
-      const now = performance.now();
-      // real time down to 10 fps; below that the sim slows rather than tunnelling
-      let dt = Math.min(0.1, (now - this.last) / 1000);
-      this.last = now;
-      if (document.hidden || this.contextLost) dt = 0;
-      try { this.tick(dt); } catch (e) { console.error(e); this.input.endFrame(); }
+      // XR: the headset runs the loop through renderer.setAnimationLoop (src/xr), the window frame sits out
+      if (!this.xr?.active) this.step();
     };
     requestAnimationFrame(frame);
+  }
+
+  /** one frame: called by the window loop, or by the VR session loop (src/xr) */
+  step() {
+    const now = performance.now();
+    // real time down to 10 fps; below that the sim slows rather than tunnelling
+    let dt = Math.min(0.1, (now - this.last) / 1000);
+    this.last = now;
+    // a headset may report the flat page as hidden while it shows the VR session
+    if ((document.hidden && !this.xr?.active) || this.contextLost) dt = 0;
+    try { this.tick(dt); } catch (e) { console.error(e); this.input.endFrame(); }
   }
 
   private tick(dt: number) {
@@ -625,7 +639,8 @@ export class Game {
     this.thermalPass.uniforms.uOn.value = this.world.thermal ? 1 : 0;
     this.thermalPass.uniforms.uTime.value = performance.now() / 1000 % 10;
     this.bloom.enabled = !this.world.thermal;
-    if (!this.contextLost) this.composer.render(dt);
+    if (this.xr?.active) this.xr.render(dt); // XR: straight to the headset, the composer cannot draw there
+    else if (!this.contextLost) this.composer.render(dt);
     try { this.emit('frame', dt); } finally { inp.endFrame(); }
   }
 
