@@ -18,13 +18,13 @@ export function buildGrass(heightTex: THREE.Texture, count = 90000, radius = 70)
     offs[i * 4] = (Math.random() * 2 - 1) * radius;
     offs[i * 4 + 1] = (Math.random() * 2 - 1) * radius;
     offs[i * 4 + 2] = Math.random() * Math.PI * 2;
-    offs[i * 4 + 3] = 0.5 + Math.random() * 0.9;
+    offs[i * 4 + 3] = 0.3 + Math.random() * 0.5;
   }
   geo.setAttribute('aOff', new THREE.InstancedBufferAttribute(offs, 4));
   geo.instanceCount = count;
   const uniforms = {
     uCam: { value: new THREE.Vector3() }, uTime: { value: 0 }, uH: { value: heightTex }, uWorld: { value: WORLD }, uR: { value: radius },
-    uSun: { value: new THREE.Vector3(0.5, 0.8, 0.3) }, uWind: { value: new THREE.Vector2(1, 0) }, uRotor: { value: new THREE.Vector4(0, -999, 0, 0) },
+    uSun: { value: new THREE.Vector3(0.5, 0.8, 0.3) }, uWind: { value: new THREE.Vector2(1, 0) }, uRotor: { value: new THREE.Vector4(0, -999, 0, 0) }, uClear: { value: new THREE.Vector3(0, 0, 0) },
     fogColor: { value: new THREE.Color() }, fogNear: { value: 1 }, fogFar: { value: 1000 }, fogDensity: { value: 0.0008 },
   };
   const mat = new THREE.ShaderMaterial({
@@ -33,7 +33,7 @@ export function buildGrass(heightTex: THREE.Texture, count = 90000, radius = 70)
       #include <common>
       #include <fog_pars_vertex>
       uniform vec3 uCam; uniform float uTime; uniform sampler2D uH; uniform float uWorld; uniform float uR;
-      uniform vec2 uWind; uniform vec4 uRotor;
+      uniform vec2 uWind; uniform vec4 uRotor; uniform vec3 uClear;
       attribute vec4 aOff;
       varying float vY; varying float vShade; varying float vFade;
       float zone(vec2 p, vec2 c, vec2 r){ vec2 d = abs(p - c) / r; return step(max(d.x, d.y), 1.0); }
@@ -50,6 +50,7 @@ export function buildGrass(heightTex: THREE.Texture, count = 90000, radius = 70)
         mask *= 1.0 - zone(wp, vec2(0., 4.), vec2(30., 22.));
         mask *= 1.0 - step(abs(wp.y), 4.5) * step(abs(wp.x), 300.);
         mask *= step(-1.0, gy);
+        mask *= smoothstep(uClear.z, uClear.z + 1.5, length(wp - uClear.xy));
         vec3 p = position * vec3(1.0, s, 1.0);
         float c = cos(aOff.z), sn = sin(aOff.z);
         p = vec3(p.x * c, p.y, p.x * sn);

@@ -193,6 +193,7 @@ export class Game {
     this.gimbalPitch = spec.tool === 'lance' ? -5 : spec.tool === 'thermal' ? -35 : -15;
     const sp = spawn ?? { pos: this.world.pads[1].clone(), yaw: 0 };
     this.home.copy(sp.pos); this.homeYaw = sp.yaw;
+    this.world.clearSpot.set(sp.pos.x, Math.max(3, spec.armLength * 2 + spec.propDiameter + 1), sp.pos.z);
     this.resetDrone();
     setLS('lastDrone', spec.id);
   }

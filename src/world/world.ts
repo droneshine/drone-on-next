@@ -36,6 +36,8 @@ export class World {
   private thermalSwap = new Map<THREE.Mesh, THREE.Material | THREE.Material[]>();
   buildGroup = new THREE.Group();
   time = 0;
+  /** grass free spot around the take off point */
+  clearSpot = new THREE.Vector3(0, 0, 0);
 
   constructor(private renderer: THREE.WebGLRenderer, quality: 'low' | 'high') {
     const s = this.scene;
@@ -155,6 +157,7 @@ export class World {
       const u = this.grass.uniforms;
       u.uCam.value.copy(cam.position);
       u.uTime.value = t;
+      u.uClear.value.set(this.clearSpot.x, this.clearSpot.z, this.clearSpot.y);
       u.uWind.value.set(this.wind.x, this.wind.z).multiplyScalar(0.12);
       const f = this.scene.fog as THREE.FogExp2;
       u.fogColor.value.copy(f.color); u.fogDensity.value = f.density;
