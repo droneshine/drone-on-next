@@ -10,6 +10,7 @@ const bar = document.querySelector<HTMLElement>('.boot-bar i')!;
 const step = (p: number) => { bar.style.setProperty('--p', String(p)); };
 
 async function boot() {
+  if (location.hash.includes('debug')) (await import('./debug')).installDebug();
   step(0.1);
   try { await document.fonts.load('40px Audiowide'); } catch { /* font optional */ }
   step(0.25);
