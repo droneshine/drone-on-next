@@ -15,6 +15,7 @@ import { Builder, MapData, PIECES, starterMap } from './builder';
 import { allMissions, Mission, MissionCtx, MissionResult, RingTracker } from './missions';
 import { getLS, setLS, progress, saveProgress } from './store';
 import { heightAt } from '../world/terrain';
+import type { Multiplayer } from '../net/multiplayer';
 
 export type State = 'boot' | 'menu' | 'fly' | 'mission' | 'build' | 'result';
 export type CamMode = 'chase' | 'fpv' | 'los' | 'orbit' | 'free';
@@ -107,6 +108,9 @@ export class Game {
   raceTime = 0; raceBest = 0; raceRunning = false; raceIdx = 0; raceCount = 0;
   private home = new THREE.Vector3();
   private homeYaw = 0;
+  mp: Multiplayer | null = null;
+  /** true during a multiplayer countdown: motors stay off */
+  raceLocked = false;
   private tagPressed = false;
   private flightLog = { dist: 0 };
   listeners: { [k: string]: ((...a: unknown[]) => void)[] } = {};
@@ -196,7 +200,10 @@ export class Game {
     this.world.clearSpot.set(sp.pos.x, Math.max(3, spec.armLength * 2 + spec.propDiameter + 1), sp.pos.z);
     this.resetDrone();
     setLS('lastDrone', spec.id);
+    this.mp?.announce();
   }
+
+  setHome(pos: THREE.Vector3, yaw: number) { this.home.copy(pos); this.homeYaw = yaw; }
 
   resetDrone() {
     this.sim.reset(this.home, this.homeYaw);
@@ -351,7 +358,7 @@ export class Game {
         let steps = 0;
         while (this.acc >= h && steps < 40) {
           if (this.hose) this.sim.extraForce.copy(this.hose.force); else this.sim.extraForce.set(0, 0, 0);
-          this.sim.step(h, inp.sticks);
+          this.sim.step(h, this.raceLocked ? { throttle: 0, yaw: 0, pitch: 0, roll: 0 } : inp.sticks);
           this.acc -= h; steps++;
         }
         if (!this.sim.onGround) this.flightTime += dt;
@@ -382,6 +389,7 @@ export class Game {
       this.updateDebris(dt);
     }
 
+    this.mp?.update(dt);
     this.updateCamera(dt);
     const focus = this.sim ? this.sim.pos : new THREE.Vector3();
     const avgS = this.sim ? this.sim.motors.reduce((a, m) => a + m.s, 0) / this.sim.motors.length : 0;
@@ -494,11 +502,23 @@ export class Game {
 
   private updateRace(dt: number) {
     if (this.state !== 'fly' || !this.raceTracker) return;
-    if (!this.raceRunning && !this.sim.onGround && this.sim.agl > 0.5) { this.raceRunning = true; this.raceTime = 0; }
+    if (this.mp && this.mp.raceState === 'running' && this.raceTracker.idx < this.raceTracker.rings.length) {
+      // in a multiplayer race the clock starts at GO, not at take off
+      if (!this.raceRunning) { this.raceRunning = true; this.raceTime = 0; }
+    } else if (!this.mp || this.mp.raceState === 'idle') {
+      if (!this.raceRunning && !this.sim.onGround && this.sim.agl > 0.5) { this.raceRunning = true; this.raceTime = 0; }
+    }
     if (this.raceRunning) this.raceTime += dt;
     if (this.raceTracker.update(this.sim.pos)) {
       audio.chime(this.raceTracker.idx);
       this.raceIdx = this.raceTracker.idx;
+      if (this.raceTracker.done && this.mp && this.mp.raceState !== 'idle') {
+        this.mp.localFinish(this.raceTime);
+        this.raceRunning = false;
+        this.toast(`Finished in ${this.raceTime.toFixed(2)} s`);
+        audio.success();
+        return;
+      }
       if (this.raceTracker.done) {
         const t = this.raceTime;
         const bests = getLS<Record<string, number>>('raceBest', {});

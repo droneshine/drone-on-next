@@ -35,6 +35,8 @@ async function boot() {
   if (import.meta.env.DEV) (window as unknown as { THREE: unknown }).THREE = THREE;
   game.start();
   const shared = await mapFromHash();
+  const { roomFromHash } = await import('./ui/mpui');
+  if (roomFromHash()) setTimeout(() => ui.openSheet('squad'), 200);
   await game.enterMenu();
   if (shared) {
     game.toast(`Shared course: ${shared.name}`);

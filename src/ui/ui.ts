@@ -5,6 +5,7 @@ import { listCustomDrones, saveCustomDrone, deleteCustomDrone, progress, downloa
 import { PIECES, MapData, starterMap } from '../game/builder';
 import { rawAxes } from '../input/input';
 import { audio } from '../audio/audio';
+import { SquadUI, roomFromHash } from './mpui';
 
 const BASE = import.meta.env.BASE_URL;
 const REPO = 'https://github.com/droneshine/drone-on';
@@ -47,13 +48,14 @@ export class UI {
   private previewTimer = 0;
   private lastTape = -1;
   private lastDevice = '';
+  squad!: SquadUI;
 
   constructor(private g: Game) {
     this.buildDom();
     g.on('state', () => this.syncState());
     g.on('toast', (t) => this.toast(String(t)));
     g.on('pause', (p) => this.showPause(!!p));
-    g.on('frame', () => this.frame());
+    g.on('frame', () => { this.frame(); this.squad.frame(); });
     g.on('crash', () => { this.crashEl.classList.add('on'); });
     g.on('build-select', () => this.syncBuildBar());
     this.loadCustom();
@@ -78,6 +80,7 @@ export class UI {
         <p class="lede">A free drone sim sandbox. Fly real industrial drones, train real missions, build your own Spielwiese.</p>
         <div class="cmds">
           <button class="cmd primary" data-go="fly"><b>FLY</b><small>Free flight on the field, your course included</small><i class="ph ph-arrow-right"></i></button>
+          <button class="cmd" data-go="squad"><b>SQUAD</b><small>Fly, race and build with friends in one room</small><i class="ph ph-arrow-right"></i></button>
           <button class="cmd" data-go="train"><b>TRAIN</b><small>Eight missions from first hover to hotspot hunt</small><i class="ph ph-arrow-right"></i></button>
           <button class="cmd" data-go="build"><b>BUILD</b><small>Place rings, gates and ramps, share the link</small><i class="ph ph-arrow-right"></i></button>
           <button class="cmd" data-go="hangar"><b>HANGAR</b><small>Pick a drone or upload your own</small><i class="ph ph-arrow-right"></i></button>
@@ -98,7 +101,7 @@ export class UI {
     });
 
     // sheets
-    for (const [id, title] of [['train', 'Train'], ['hangar', 'Hangar'], ['settings', 'Settings'], ['editor', 'Upload a drone']]) {
+    for (const [id, title] of [['squad', 'Squad'], ['train', 'Train'], ['hangar', 'Hangar'], ['settings', 'Settings'], ['editor', 'Upload a drone']]) {
       const s = el(`<section class="sheet live" data-sheet="${id}" aria-label="${title}"><header><button class="back" aria-label="Back"><i class="ph ph-arrow-left"></i></button><h2>${title}</h2><div class="grow"></div></header><div class="body"></div></section>`);
       $('.back', s).addEventListener('click', () => { audio.tick(); id === 'editor' ? this.openSheet('hangar') : this.closeSheets(); });
       this.root.append(s); this.sheets[id] = s;
@@ -159,6 +162,8 @@ export class UI {
     this.pauseEl = el(`<div class="overlay live"><div class="box" role="dialog" aria-label="Paused"><h2>Paused</h2><div class="list">
       <button data-p="resume">Resume <i class="ph ph-play"></i></button>
       <button data-p="restart">Restart <i class="ph ph-arrow-counter-clockwise"></i></button>
+      <button data-p="invite" class="mp-only">Invite friends <i class="ph ph-link"></i></button>
+      <button data-p="race" class="mp-only">Start race <i class="ph ph-flag-checkered"></i></button>
       <button data-p="hangar">Change drone <i class="ph ph-drone"></i></button>
       <button data-p="settings">Settings <i class="ph ph-sliders"></i></button>
       <button data-p="menu">Main menu <i class="ph ph-house"></i></button></div></div></div>`);
@@ -176,8 +181,11 @@ export class UI {
       if (p === 'menu') { this.resume(); g.enterMenu(); }
       if (p === 'hangar') { this.resume(); g.enterMenu().then(() => this.openSheet('hangar')); }
       if (p === 'settings') { this.openSheet('settings'); }
+      if (p === 'invite') this.squad.copyInvite();
+      if (p === 'race') { this.resume(); g.mp?.startRace(); }
     });
 
+    this.squad = new SquadUI(g, this.root, t => this.toast(t), () => { this.closeSheets(); if (g.state !== 'fly') g.startFreeFlight(); });
     this.wireBuild();
     this.wireTouch();
     this.renderTrain();
@@ -186,12 +194,17 @@ export class UI {
 
   private resume() { this.g.paused = false; this.showPause(false); }
 
-  showPause(on: boolean) { this.pauseEl.classList.toggle('open', on); if (!on) this.closeSheets(); }
+  showPause(on: boolean) {
+    this.pauseEl.classList.toggle('open', on);
+    for (const b of this.pauseEl.querySelectorAll<HTMLElement>('.mp-only')) b.hidden = !this.g.mp;
+    if (!on) this.closeSheets();
+  }
 
   openSheet(id: string) {
     for (const [k, s] of Object.entries(this.sheets)) s.classList.toggle('open', k === id);
     this.rail.classList.add('hide');
     this.specLine.style.opacity = id === 'hangar' || id === 'editor' ? '1' : '0';
+    if (id === 'squad') this.squad.renderLobby($('.body', this.sheets.squad));
     if (id === 'train') this.renderTrain();
     if (id === 'hangar') this.renderHangar();
     if (id === 'settings') this.renderSettings();
@@ -567,11 +580,11 @@ export class UI {
       const k = btn.dataset.b;
       if (k === 'fly') { g.saveMap(); g.startFreeFlight(); }
       if (k === 'menu') { g.saveMap(); g.enterMenu(); }
-      if (k === 'clear' && confirm('Remove every piece from this map?')) { g.builder.clear(); this.syncBuildBar(); }
+      if (k === 'clear' && confirm('Remove every piece from this map?')) { g.builder.clear(true); this.syncBuildBar(); }
       if (k === 'race') { g.builder.map.race = !g.builder.map.race; this.syncBuildBar(); }
       if (k === 'export') downloadFile(`${(g.builder.map.name || 'map').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.droneon-map.json`, JSON.stringify(g.builder.map));
       if (k === 'import') this.pickFile('.json', async f => {
-        try { const m = JSON.parse(await readFileAs(f, 'text')) as MapData; if (!Array.isArray(m.pieces)) throw 0; g.builder.load(m); this.syncBuildBar(); ($('.map-name', b) as HTMLInputElement).value = m.name; this.toast(`${m.pieces.length} pieces loaded`); }
+        try { const m = JSON.parse(await readFileAs(f, 'text')) as MapData; if (!Array.isArray(m.pieces)) throw 0; g.builder.load(m, true); this.syncBuildBar(); ($('.map-name', b) as HTMLInputElement).value = m.name; this.toast(`${m.pieces.length} pieces loaded`); }
         catch { this.toast('That file is not a DRONE ON map'); }
       });
       if (k === 'share') {

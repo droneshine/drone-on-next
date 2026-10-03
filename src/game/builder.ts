@@ -107,22 +107,27 @@ export class Builder {
   yaw = 0; lift = 0; scale = 1;
   active = false;
   undo: MapData['pieces'][] = [];
+  /** fired for user edits only, multiplayer mirrors them */
+  onOp: ((op: { op: string; [k: string]: unknown }) => void) | null = null;
 
   constructor(private world: World) {}
 
-  clear() {
+  clear(emit = false) {
+    if (emit) this.onOp?.({ op: 'clear' });
     for (const b of this.built) { this.world.buildGroup.remove(b.obj); for (const c of b.cols) this.world.colliders.remove(c); }
     this.built = [];
     this.map.pieces = [];
   }
 
-  load(m: MapData) {
+  load(m: MapData, emit = false) {
+    if (emit) this.onOp?.({ op: 'map', map: m });
     this.clear();
     this.map = { ...m, pieces: [] };
     for (const p of m.pieces.slice(0, 2000)) this.place(p, false);
   }
 
   place(p: Piece, record = true) {
+    if (record) this.onOp?.({ op: 'place', p });
     if (record) this.undo.push(this.map.pieces.slice());
     const b = buildPiece(p);
     this.world.buildGroup.add(b.obj);
@@ -135,6 +140,7 @@ export class Builder {
   }
 
   removeAt(i: number) {
+    this.onOp?.({ op: 'remove', i });
     if (i < 0 || i >= this.map.pieces.length) return;
     this.undo.push(this.map.pieces.slice());
     const pieces = this.map.pieces.filter((_, k) => k !== i);
@@ -151,6 +157,7 @@ export class Builder {
     this.clear();
     this.map = { ...meta, pieces: [] };
     for (const p of prev) this.place(p, false);
+    this.onOp?.({ op: 'map', map: this.map });
   }
 
   checkpoints() { return this.built.map(b => b.checkpoint).filter(Boolean) as NonNullable<Built['checkpoint']>[]; }

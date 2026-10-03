@@ -72,7 +72,7 @@ export class Input {
 
   private looksLikeRC(g: Gamepad) {
     const id = g.id.toLowerCase();
-    return /radiomaster|frsky|taranis|jumper|edgetx|opentx|tx16|boxer|zorro|pocket|tbs|tango|betafpv|literadio|spektrum|dji.*fpv|flysky|ghost|crossfire|joystick.*rc|elrs/.test(id)
+    return /siyi|unirc|radiomaster|frsky|taranis|jumper|edgetx|opentx|tx16|boxer|zorro|pocket|tbs|tango|betafpv|literadio|spektrum|dji.*fpv|flysky|ghost|crossfire|joystick.*rc|elrs/.test(id)
       || (g.buttons.length < 10 && g.axes.length >= 4 && !/xbox|playstation|dualsense|dualshock|wireless controller|8bitdo|switch/.test(id));
   }
 

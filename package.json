@@ -14,7 +14,8 @@
   "dependencies": {
     "@fontsource/audiowide": "^5.3.0",
     "@phosphor-icons/web": "^2.1.2",
-    "three": "^0.186.1"
+    "three": "^0.186.1",
+    "trystero": "^0.25.4"
   },
   "devDependencies": {
     "@types/three": "^0.186.0",
