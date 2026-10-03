@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover" />
+  <title>DRONE ON by DroneShine</title>
+  <meta name="description" content="DRONE ON is a free drone flight simulator sandbox. Fly FPV and industrial drones, build your own course, train real missions, upload your own drone." />
+  <meta name="theme-color" content="#002518" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <meta property="og:title" content="DRONE ON by DroneShine" />
+  <meta property="og:description" content="Free drone sim sandbox. Fly, build, train, share." />
+  <meta property="og:image" content="img/og.jpg" />
+</head>
+<body>
+  <!--
+  THESIS: The interface is the pilot's ground station, not a game menu: telemetry first, the field always visible behind it. Refuses the category default of neon esports chrome and stacked cards.
+  OWN-WORLD: Evergreen #002518 ground, Off White text, Light Green #B5F78A as live telemetry, Accent Green #26C257 only for the armed/go state. Nasalization (Audiowide where it is not installed) for every number and command word, Inter for everything a pilot reads. Hairline rules, tabular numerals, no boxes inside boxes.
+  STORY: A pilot lands on the field, sees a real drone idling in front of them, picks FLY, TRAIN or BUILD and is in the air in two clicks.
+  FIRST VIEWPORT: Full bleed live 3D field with the selected drone hovering; left rail with the wordmark and five giant Nasalization commands; bottom right the drone's live spec line.
+  FORM: Ground control station; extension of the established DroneShine brand.
+  FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+  -->
+  <canvas id="gl"></canvas>
+  <div id="ui"></div>
+  <div id="boot">
+    <img src="img/sparkle_white.png" alt="" class="boot-mark" />
+    <div class="boot-bar"><i></i></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "drone-on",
+  "private": true,
+  "version": "1.0.0",
+  "description": "DRONE ON by DroneShine. A free drone flight sim sandbox for training and play.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/audiowide": "^5.3.0",
+    "@phosphor-icons/web": "^2.1.2",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "puppeteer-core": "^25.12.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.2"
+  }
+}
