@@ -392,7 +392,8 @@ export function disposeVisual(v: DroneVisual | null | undefined) {
   v.root.traverse(o => {
     const m = o as THREE.Mesh;
     if (!m.isMesh || m.userData.sharedGlb) return;
-    m.geometry?.dispose();
+    // Royale tier models share one cached geometry per tier and paint (src/art/tiers.ts): keep it
+    if (!m.geometry?.userData.shared) m.geometry?.dispose();
     const mats = Array.isArray(m.material) ? m.material : [m.material];
     for (const mat of mats) {
       if (!mat) continue;
