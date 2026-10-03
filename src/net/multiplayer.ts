@@ -21,7 +21,7 @@ import { audio } from '../audio/audio';
 // room's host; a room nobody hosts yet settles on the smallest pilot id; two
 // different claims resolve to the smaller id. Everybody ends up agreeing.
 
-const APP_ID = 'droneon-by-droneshine-v1';
+const APP_ID = 'droneon-next-by-droneshine';
 const SEND_HZ = 20;
 const PARKED_HZ = 2;
 const DELAY = 0.1;              // interpolation delay in seconds

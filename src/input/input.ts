@@ -8,7 +8,8 @@ export type Device = 'keyboard' | 'gamepad' | 'rc' | 'touch';
 export interface AxisMap { throttle: number; yaw: number; pitch: number; roll: number; invert: { throttle: boolean; yaw: boolean; pitch: boolean; roll: boolean }; }
 export interface Calib { min: number[]; max: number[]; center: number[]; }
 
-const LS = 'droneon.input.v1';
+const LS = 'droneon2.input.v1';
+const LEGACY_LS = 'droneon.input.v1';
 
 export interface InputSettings {
   rcMap: AxisMap;
@@ -30,7 +31,7 @@ const DEFAULTS: InputSettings = {
 
 function loadSettings(): InputSettings {
   let s: Partial<InputSettings> = {};
-  try { const v = JSON.parse(localStorage.getItem(LS) || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) s = v; } catch { /* storage blocked or corrupt */ }
+  try { const v = JSON.parse(localStorage.getItem(LS) || localStorage.getItem(LEGACY_LS) || '{}'); if (v && typeof v === 'object' && !Array.isArray(v)) s = v; } catch { /* storage blocked or corrupt */ }
   const map = s.rcMap && typeof s.rcMap === 'object' ? s.rcMap : {} as Partial<AxisMap>;
   const axis = (v: unknown, d: number) => (typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < 16 ? v : d);
   const inv = (map.invert && typeof map.invert === 'object' ? map.invert : {}) as Partial<AxisMap['invert']>;

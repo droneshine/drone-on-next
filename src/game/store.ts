@@ -3,19 +3,42 @@
 
 import { DroneSpec, validateSpec } from '../sim/spec';
 
-const DB = 'droneon', STORE = 'drones';
+// DRONE ON Next keeps its own saves; the live game (prefix droneon.) is only ever read, as a one time import
+export const NS = 'droneon2.';
+const LEGACY_NS = 'droneon.';
+const DB = 'droneon2', LEGACY_DB = 'droneon', STORE = 'drones';
 let dbp: Promise<IDBDatabase | null> | null = null;
 
-function db(): Promise<IDBDatabase | null> {
-  if (dbp) return dbp;
-  dbp = new Promise(res => {
+function openDb(name: string, create: boolean): Promise<IDBDatabase | null> {
+  return new Promise(res => {
     try {
-      const r = indexedDB.open(DB, 1);
-      r.onupgradeneeded = () => r.result.createObjectStore(STORE, { keyPath: 'id' });
+      const r = indexedDB.open(name, 1);
+      r.onupgradeneeded = () => { if (create) r.result.createObjectStore(STORE, { keyPath: 'id' }); else { r.transaction?.abort(); } };
       r.onsuccess = () => res(r.result);
       r.onerror = () => res(null);
     } catch { res(null); }
   });
+}
+
+function db(): Promise<IDBDatabase | null> {
+  if (dbp) return dbp;
+  dbp = (async () => {
+    const d = await openDb(DB, true);
+    if (!d) return null;
+    // first start: copy the drones built in the live game, the live game keeps its own copy untouched
+    if (!localStorage.getItem(NS + 'importedDrones')) {
+      try {
+        localStorage.setItem(NS + 'importedDrones', '1');
+        const old = await openDb(LEGACY_DB, false);
+        if (old && old.objectStoreNames.contains(STORE)) {
+          const list = await new Promise<unknown[]>(r => { const q = old.transaction(STORE, 'readonly').objectStore(STORE).getAll(); q.onsuccess = () => r(q.result); q.onerror = () => r([]); });
+          await new Promise<void>(r => { const tx = d.transaction(STORE, 'readwrite'); for (const x of list) tx.objectStore(STORE).put(x); tx.oncomplete = () => r(); tx.onerror = () => r(); });
+        }
+        old?.close();
+      } catch { /* nothing to import */ }
+    }
+    return d;
+  })();
   return dbp;
 }
 
@@ -68,7 +91,11 @@ const mem = new Map<string, string>();
 /** Read a stored value. Anything of the wrong shape falls back, so a stale or corrupt entry can never lock a player out. */
 export function getLS<T>(key: string, fallback: T): T {
   let v: unknown = undefined;
-  try { const s = localStorage.getItem('droneon.' + key); if (s != null) v = JSON.parse(s); } catch { v = undefined; }
+  try {
+    // own save first, the live game's save as a read only starting point
+    const s = localStorage.getItem(NS + key) ?? localStorage.getItem(LEGACY_NS + key);
+    if (s != null) v = JSON.parse(s);
+  } catch { v = undefined; }
   if (v === undefined) { const m = mem.get(key); if (m) { try { v = JSON.parse(m); } catch { v = undefined; } } }
   if (v === undefined || v === null) return fallback;
   const shape = (x: unknown) => (Array.isArray(x) ? 'array' : x === null ? 'null' : typeof x);
@@ -78,7 +105,7 @@ export function getLS<T>(key: string, fallback: T): T {
 export function setLS(key: string, v: unknown) {
   const s = JSON.stringify(v);
   mem.set(key, s);
-  try { localStorage.setItem('droneon.' + key, s); } catch { /* blocked */ }
+  try { localStorage.setItem(NS + key, s); } catch { /* blocked */ }
 }
 
 export interface Progress { stars: Record<string, number>; best: Record<string, number>; flights: number; airtime: number; distance: number; }

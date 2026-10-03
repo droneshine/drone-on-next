@@ -18,8 +18,10 @@ function fail(title: string, text: string, err?: unknown, offerReset = false) {
   bootEl().classList.remove('gone');
   bootEl().innerHTML = `<div class="boot-fail"><h2>${title}</h2><p>${text}</p>${offerReset ? '<button class="btn go" type="button">Reset saved data and reload</button>' : ''}</div>`;
   bootEl().querySelector('button')?.addEventListener('click', () => {
-    try { for (const k of Object.keys(localStorage)) if (k.startsWith('droneon.')) localStorage.removeItem(k); } catch { /* storage blocked */ }
-    try { indexedDB.deleteDatabase('droneon'); } catch { /* ignore */ }
+    // only this version's saves: the live DRONE ON keeps its own
+    try { for (const k of Object.keys(localStorage)) if (k.startsWith('droneon2.')) localStorage.removeItem(k); } catch { /* storage blocked */ }
+    try { localStorage.setItem('droneon2.importedDrones', '1'); } catch { /* ignore */ }
+    try { indexedDB.deleteDatabase('droneon2'); } catch { /* ignore */ }
     location.hash = ''; location.reload();
   });
 }
