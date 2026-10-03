@@ -99,7 +99,7 @@ void main(){
   vec3 n = normalize(vLP);
   // electric crackle that lives only near the rim
   vec2 q = vec2(atan(n.z, n.x) * 4.0, n.y * 4.0) + uSeed;
-  float crack = smoothstep(0.07, 0.0, abs(vnoise(q * 2.6 + uTime * 9.0) - 0.5)) * smoothstep(0.35, 0.9, f);
+  float crack = smoothstep(0.06, 0.0, abs(vnoise(q * 2.6 + uTime * 9.0) - 0.5)) * smoothstep(0.6, 0.95, f);
   // three faint latitude lines give the sphere its shape without filling it
   float lat = smoothstep(0.035, 0.0, abs(fract(asin(clamp(n.y, -1.0, 1.0)) * 1.2732 + 0.5) - 0.5)) * (1.0 - f) * 0.35;
   float a = (rim * 1.25 + crack * 0.9 + lat) * uAlpha;
