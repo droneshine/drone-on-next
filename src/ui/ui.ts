@@ -48,6 +48,7 @@ export class UI {
   private previewTimer = 0;
   private lastTape = -1;
   private lastDevice = '';
+  private pauseOpenedAt = 0;
   squad!: SquadUI;
 
   constructor(private g: Game) {
@@ -173,7 +174,8 @@ export class UI {
 
     this.pauseEl.addEventListener('click', e => {
       const b = (e.target as HTMLElement).closest<HTMLElement>('[data-p]');
-      if (!b) { if (e.target === this.pauseEl) this.resume(); return; }
+      // a tap on the backdrop closes the menu, but never the same tap that opened it
+      if (!b) { if (e.target === this.pauseEl && performance.now() - this.pauseOpenedAt > 450) this.resume(); return; }
       audio.tick();
       const p = b.dataset.p;
       if (p === 'resume') this.resume();
@@ -195,6 +197,7 @@ export class UI {
   private resume() { this.g.paused = false; this.showPause(false); }
 
   showPause(on: boolean) {
+    if (on) this.pauseOpenedAt = performance.now();
     this.pauseEl.classList.toggle('open', on);
     for (const b of this.pauseEl.querySelectorAll<HTMLElement>('.mp-only')) b.hidden = !this.g.mp;
     if (!on) this.closeSheets();
@@ -203,6 +206,8 @@ export class UI {
   openSheet(id: string) {
     for (const [k, s] of Object.entries(this.sheets)) s.classList.toggle('open', k === id);
     this.rail.classList.add('hide');
+    // a sheet opened from the pause menu sits in front of it, the pause menu comes back on close
+    this.pauseEl.classList.remove('open');
     this.specLine.style.opacity = id === 'hangar' || id === 'editor' ? '1' : '0';
     if (id === 'squad') this.squad.renderLobby($('.body', this.sheets.squad));
     if (id === 'train') this.renderTrain();
@@ -212,6 +217,7 @@ export class UI {
 
   closeSheets() {
     for (const s of Object.values(this.sheets)) s.classList.remove('open');
+    if (this.g.paused && (this.g.state === 'fly' || this.g.state === 'mission' || this.g.state === 'build')) this.pauseEl.classList.add('open');
     if (this.g.state === 'menu') { this.rail.classList.remove('hide'); this.specLine.style.opacity = '1'; }
   }
 
@@ -651,8 +657,9 @@ export class UI {
       if (t === 'spray') { g.input.touchSpray = true; b.classList.add('on'); const up = () => { g.input.touchSpray = false; b.classList.remove('on'); removeEventListener('pointerup', up); }; addEventListener('pointerup', up); }
       if (t === 'cam') key('KeyC'); if (t === 'mode') key('KeyM'); if (t === 'thermal') key('KeyH'); if (t === 'reset') key('KeyR');
       if (t === 'tag') g.input.touchTag = true;
-      if (t === 'pause') key('Escape');
     });
+    // pause acts on release, so the lifting finger cannot land on the menu it just opened
+    this.touch.addEventListener('click', e => { const b = (e.target as HTMLElement).closest<HTMLElement>('[data-t=pause]'); if (b) g.input.pressed.add('Escape'); });
   }
 
   syncJoystick() {

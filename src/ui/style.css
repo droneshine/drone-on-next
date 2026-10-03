@@ -354,3 +354,22 @@ input[type=color] { width: 100%; height: 42px; border-radius: var(--r); border: 
 .victory.on h2 { transform: scale(1); }
 .victory p { font-size: 18px; color: var(--off); margin-top: 6px; }
 @media (max-width: 760px) { .squad-box { top: auto; bottom: 200px; } }
+
+/* touch scrolling for every scrollable panel, the RC7 and phones need it explicitly */
+.rail { overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; scrollbar-width: none; }
+.rail::-webkit-scrollbar { display: none; }
+.sheet .body, .overlay .box { touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.overlay .box { max-height: 92dvh; overflow-y: auto; }
+.build .bar { touch-action: pan-x; }
+
+/* layers that are switched off must not catch taps or swipes: visibility follows opacity */
+.hud, .build, .squad { visibility: hidden; transition: opacity 200ms ease, visibility 0s linear 200ms; }
+.hud.on, .build.on, .squad.on { visibility: visible; transition: opacity 200ms ease, visibility 0s; }
+/* stacking: flight layers below panels, panels below dialogs */
+.hud, .build, .squad, .touch, .crash { z-index: 1; }
+.rail, .spec-line { z-index: 2; }
+.sheet { z-index: 4; }
+.overlay { z-index: 5; }
+.toasts { z-index: 6; }
+.victory { z-index: 3; }
+@media (max-height: 960px) and (min-width: 761px) { .lede { display: none; } .title { margin-top: 14px; } }
