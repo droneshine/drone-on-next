@@ -402,9 +402,14 @@ export function disposeVisual(v: DroneVisual | null | undefined) {
   });
 }
 
+/** builders for model kinds that live outside this file (the Royale tiers register theirs from src/art) */
+export const modelRegistry: Partial<Record<DroneSpec['model'], (spec: DroneSpec) => DroneVisual>> = {};
+
 export async function buildDroneVisual(spec: DroneSpec): Promise<DroneVisual> {
   let v: DroneVisual;
-  switch (spec.model) {
+  const registered = modelRegistry[spec.model];
+  if (registered) v = registered(spec);
+  else switch (spec.model) {
     case 'dscan': v = buildDScan(spec); break;
     case 'dsolar': v = buildDSolarMT50(spec); break;
     case 'dsolarmax': v = buildDSolarMT100(spec); break;

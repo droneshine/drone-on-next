@@ -269,7 +269,19 @@ export class UI {
     if (on && (g.input.device === 'keyboard' || g.input.device === 'gamepad')) $<HTMLButtonElement>('[data-p=resume]', this.pauseEl).focus();
   }
 
+  private sheetRenderers: Record<string, (body: HTMLElement) => void> = {};
+
+  /** Modes add their own panel (Royale, Academy, Workshop) without editing the rail code. */
+  registerSheet(id: string, title: string, render: (body: HTMLElement) => void) {
+    this.sheetRenderers[id] = render;
+    if (this.sheets[id]) return;
+    const s = el(`<section class="sheet live" data-sheet="${id}" aria-label="${esc(title)}" inert><header><button class="back" aria-label="Back"><i class="ph ph-arrow-left"></i></button><h2>${esc(title)}</h2><div class="grow"></div></header><div class="body"></div></section>`);
+    $('.back', s).addEventListener('click', () => { audio.tick(); this.closeSheets(); });
+    this.root.append(s); this.sheets[id] = s;
+  }
+
   openSheet(id: string) {
+    if (!this.sheets[id]) return;
     for (const [k, s] of Object.entries(this.sheets)) s.classList.toggle('open', k === id);
     this.rail.classList.add('hide');
     // a sheet opened from the pause menu sits in front of it, the pause menu comes back on close
@@ -279,6 +291,7 @@ export class UI {
     if (id === 'train') this.renderTrain();
     if (id === 'hangar') this.renderHangar();
     if (id === 'settings') this.renderSettings();
+    this.sheetRenderers[id]?.($('.body', this.sheets[id]));
     this.syncInert();
     $<HTMLElement>('.back', this.sheets[id]).focus({ preventScroll: true });
   }

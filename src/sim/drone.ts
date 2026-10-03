@@ -17,6 +17,9 @@ const DOWN = new THREE.Vector3(0, -1, 0);
 
 export interface Motor { x: number; y: number; z: number; dir: number; s: number; thrust: number; }
 
+/** Royale tier landing gear heights (GDD 6.1); art may refine with the models */
+export const TIER_LEG = { spark: 0.06, bolt: 0.12, storm: 0.18, nova: 0.22 };
+
 export class DroneSim {
   spec: DroneSpec;
   pos = new THREE.Vector3();
@@ -89,7 +92,8 @@ export class DroneSim {
 
   legHeight() {
     const s = this.spec;
-    return s.model === 'racer' ? 0.012 : s.model === 'dsolar' ? 0.454 : s.model === 'dsolarmax' ? 0.8 : s.model === 'dscan' ? 0.3 : s.model === 'cine' ? 0.335 : s.armLength * 0.6;
+    return s.model === 'racer' ? 0.012 : s.model === 'dsolar' ? 0.454 : s.model === 'dsolarmax' ? 0.8 : s.model === 'dscan' ? 0.3 : s.model === 'cine' ? 0.335
+      : s.model in TIER_LEG ? TIER_LEG[s.model as keyof typeof TIER_LEG] : s.armLength * 0.6;
   }
 
   get totalMass() { return this.spec.mass + this.payload; }

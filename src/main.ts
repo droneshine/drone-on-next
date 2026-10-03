@@ -8,6 +8,9 @@ import { listCustomDrones } from './game/store';
 import { audio } from './audio/audio';
 import { roomFromHash } from './ui/mpui';
 import { sanitizeMap } from './game/builder';
+import './art/register';
+import { installRoyale } from './royale';
+import { installMeta } from './meta';
 
 const bar = document.querySelector<HTMLElement>('.boot-bar i')!;
 const step = (p: number) => { bar.style.setProperty('--p', String(p)); };
@@ -66,6 +69,8 @@ async function boot() {
     await game.warmup();
     step(0.9);
     const ui = new UI(game);
+    installMeta(game, ui);
+    installRoyale(game, ui);
     (window as unknown as { droneon: unknown }).droneon = { game, ui };
     // dev only: QA rigs in tools/ render with the same THREE instance
     if (import.meta.env.DEV) (window as unknown as { THREE: unknown }).THREE = THREE;

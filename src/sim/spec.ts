@@ -4,7 +4,7 @@
 export type FlightMode = 'acro' | 'angle' | 'gps';
 export type Tool = 'none' | 'sprayDown' | 'lance' | 'thermal' | 'camera';
 export type Layout = 'quadX' | 'hexX' | 'octoX' | 'coaxX8';
-export type ModelKind = 'dsolar' | 'dsolarmax' | 'dshine' | 'dscan' | 'racer' | 'cine' | 'generic';
+export type ModelKind = 'dsolar' | 'dsolarmax' | 'dshine' | 'dscan' | 'racer' | 'cine' | 'generic' | 'spark' | 'bolt' | 'storm' | 'nova';
 
 export interface Rates {
   rcRate: number;    // Betaflight style
