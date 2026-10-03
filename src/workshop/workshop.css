@@ -5,6 +5,7 @@
 .ws-stats .fact { text-align: left; min-width: 0; }
 .ws-stats .fact b { font-size: 24px; overflow-wrap: anywhere; }
 .ws-stats .fact.like b { color: var(--lg); }
+.ws-stats .fact b.bad { color: var(--bad); }
 .ws-msg { display: grid; gap: 4px; margin: -4px 0 12px; }
 .ws-msg p { color: var(--warn); font-weight: 600; font-size: 13px; letter-spacing: 0.03em; line-height: 1.45; }
 .ws-opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 8px; }

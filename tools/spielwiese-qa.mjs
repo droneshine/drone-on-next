@@ -181,6 +181,7 @@ try {
     await shot('pilot');
   }
   if (STEPS.includes('workshop')) {
+    if ((await state()) !== 'menu') { await page.evaluate(() => window.droneon.game.enterMenu()); await sleep(700); }
     await page.evaluate(() => window.droneon.ui.closeSheets());
     await sleep(300);
     await tap('[data-go=hangar]');
