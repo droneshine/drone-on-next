@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { DroneSpec, motorLayout } from '../sim/spec';
 import { TIER_LEG } from '../sim/drone';
 import type { DroneVisual } from '../render/droneModels';
-import { BRAND, PartSet, Finish, place, rod, tierBodyMaterial, hideWhenClear, luminance, hdr } from './kit';
+import { BRAND, PartSet, Finish, place, rod, tierBodyMaterial, hideWhenClear, luminance, mergeBuilt } from './kit';
 
 // The four Royale tiers, built to GDD 6.1 so physics and visuals agree:
 //
@@ -17,9 +17,13 @@ import { BRAND, PartSet, Finish, place, rod, tierBodyMaterial, hideWhenClear, lu
 // BOLT a belly tank with a forward lance, STORM a hexacopter wearing a glowing halo coil,
 // NOVA a stacked X8 carrying a glowing core orb on tall gear.
 //
-// Draw calls per drone: frame (paint, carbon, tank, gear) + hot parts (motors, pack) +
-// lights (nav LEDs, coil, core) + one merged blur disc for all rotors. Blades are separate
-// meshes so they can spin; they hide themselves once the rotor blurs (animateProps).
+// Level of detail (THREE.LOD inside the root, picked by the renderer every frame):
+//   NEAR  under 80 m: frame (paint, carbon, tank, gear) + hot parts (motors, packs) + lights
+//         (nav LEDs, coil, core) + ONE merged blur disc for all rotors, 4 draw calls in flight;
+//         blades are separate meshes so they spin, and hide once the rotor blurs (animateProps)
+//   MID   80 to 250 m: everything above merged into one mesh, rotors as lit tip rings, 1 draw call
+//   FAR   beyond 250 m: a minimal silhouette (arms, body, rotor rings, beacon, signature), 1 draw call
+// All levels share one material instance per drone, so the evolve glow lights every level.
 
 type V3 = THREE.Vector3;
 const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
@@ -38,37 +42,86 @@ const accentOf = (c: string): Finish => ({ color: c, rough: 0.5, metal: 0.05 });
 /** prop tips wear the accent unless it is too dark to read at a distance, then the paint */
 export function tipColor(spec: DroneSpec) { return luminance(spec.accent) > 0.25 ? spec.accent : spec.color; }
 
-interface Kit { v: DroneVisual; frame: PartSet; hot: PartSet; glow: PartSet; spec: DroneSpec; }
+interface Kit { v: DroneVisual; near: THREE.Group; frame: PartSet; hot: PartSet; glow: PartSet; mid: PartSet; far: PartSet; spec: DroneSpec; }
+
+export const LOD_MID = 80, LOD_FAR = 250;
+
+/** every tier drone ever built, weakly held: the beacon layer draws the live ones in one call */
+export const tierRoots = new Set<WeakRef<THREE.Object3D>>();
 
 function start(spec: DroneSpec, fpv: V3): Kit {
   return {
     v: { root: new THREE.Group(), props: [], nozzles: [], fpvCam: fpv, leds: [] },
-    frame: new PartSet(), hot: new PartSet(), glow: new PartSet(), spec,
+    near: new THREE.Group(),
+    frame: new PartSet(), hot: new PartSet(), glow: new PartSet(), mid: new PartSet(), far: new PartSet(), spec,
   };
 }
 
-/** turn the part sets into meshes: three static draw calls at most */
+/** turn the part sets into the three LOD levels */
 function finish(k: Kit) {
   const { v } = k;
   const bodyMat = tierBodyMaterial();
-  const frame = new THREE.Mesh(k.frame.build(), bodyMat);
+  const near = k.near;
+  near.name = 'tier-near';
+  const frameGeo = k.frame.build();
+  const frame = new THREE.Mesh(frameGeo, bodyMat);
   frame.name = 'tier-frame'; frame.userData.temp = 0.7;
-  v.root.add(frame);
-  if (!k.hot.empty) {
-    const hot = new THREE.Mesh(k.hot.build(), bodyMat);
-    hot.name = 'tier-hot'; hot.userData.temp = 0.96;
-    v.root.add(hot);
-  }
-  if (!k.glow.empty) {
-    // emissive lights: transparent so they cast no shadow, HDR vertex colour so they bloom a little
-    const lights = new THREE.Mesh(k.glow.build(), new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: true }));
-    lights.name = 'tier-lights'; lights.userData.temp = 0.9;
-    lights.renderOrder = 1;
-    v.root.add(lights);
-    v.leds.push(lights);
-  }
+  near.add(frame);
+  const hotGeo = k.hot.build();
+  const hot = new THREE.Mesh(hotGeo, bodyMat);
+  hot.name = 'tier-hot'; hot.userData.temp = 0.96;
+  near.add(hot);
+  const glowGeo = k.glow.build();
+  const lights = new THREE.Mesh(glowGeo, bodyMat);
+  lights.name = 'tier-lights'; lights.userData.temp = 0.9;
+  near.add(lights);
+  v.leds.push(lights);
+  // mid: the whole near model in one mesh, rotors as lit rings
+  const mid = new THREE.Mesh(mergeBuilt([frameGeo, hotGeo, glowGeo, k.mid.build()]), bodyMat);
+  mid.name = 'tier-mid'; mid.userData.temp = 0.75;
+  const far = new THREE.Mesh(k.far.build(), bodyMat);
+  far.name = 'tier-far'; far.userData.temp = 0.75;
+  const lod = new THREE.LOD();
+  lod.name = 'tier-lod';
+  lod.addLevel(near, 0, 0);
+  lod.addLevel(mid, LOD_MID, 0.08);
+  lod.addLevel(far, LOD_FAR, 0.08);
+  v.root.add(lod);
   v.root.userData.tier = k.spec.model;
+  v.root.userData.lod = lod;
+  tierRoots.add(new WeakRef(v.root));
   return v;
+}
+
+/**
+ * The far silhouette: what is left of a drone at 250 m and beyond (a few pixels): arms, body,
+ * rotor rings in the tip colour, a beacon on top and the tier's signature shape.
+ */
+function farSilhouette(k: Kit, body: [number, number, number], bodyY: number, signature?: (p: PartSet) => void) {
+  const { spec } = k;
+  const R = spec.propDiameter / 2;
+  const tip = tipColor(spec);
+  k.far.add(place(new THREE.BoxGeometry(...body), 0, bodyY, 0), paintOf(spec.color));
+  for (const m of motorLayout(spec)) {
+    if (m.y < 0) continue;
+    const a = Math.atan2(m.z, m.x), L = Math.hypot(m.x, m.z);
+    k.far.add(place(new THREE.BoxGeometry(L, 0.02, 0.025), Math.cos(a) * L / 2, 0, Math.sin(a) * L / 2, 0, -a, 0), { color: '#2a2d2c', rough: 0.6 });
+    for (const y of spec.layout === 'coaxX8' ? [0.096, -0.096] : [0.03]) {
+      k.far.add(place(new THREE.TorusGeometry(R * 0.86, Math.max(0.012, R * 0.09), 3, 10), m.x, y, m.z, Math.PI / 2), { color: tip, emit: 0.9, rough: 0.5 });
+    }
+  }
+  k.far.add(place(new THREE.OctahedronGeometry(0.035 + spec.armLength * 0.06, 0), 0, bodyY + body[1] * 0.5 + 0.03, 0), { color: BRAND.light, emit: 3 });
+  signature?.(k.far);
+}
+
+/** rotor tip rings for the mid level, where the blur discs are gone */
+function midRotors(k: Kit, hubH: number) {
+  const { spec } = k;
+  const R = spec.propDiameter / 2;
+  for (const m of motorLayout(spec)) {
+    const y = m.y + hubH * (m.y < 0 ? -1 : 1);
+    k.mid.add(place(new THREE.TorusGeometry(R * 0.88, Math.max(0.006, R * 0.05), 3, 20), m.x, y, m.z, Math.PI / 2), { color: tipColor(spec), emit: 0.7, rough: 0.5 });
+  }
 }
 
 // ------------------------------------------------------------------ props
@@ -162,7 +215,7 @@ function addTierProps(k: Kit, hubH: number, blades: number) {
     if (m.dir < 0) b.scale.x = -1;
     b.rotation.y = Math.random() * Math.PI;
     pivot.add(b);
-    v.root.add(pivot);
+    k.near.add(pivot);
     discParts.push(discGeometry(R, discStops).translate(m.x, y, m.z));
     v.props.push({ pivot, blades: b, disc: null as unknown as THREE.Mesh, dir: m.dir });
   }
@@ -172,7 +225,7 @@ function addTierProps(k: Kit, hubH: number, blades: number) {
   disc.userData.noThermal = true;
   disc.name = 'tier-discs';
   disc.renderOrder = 2;
-  v.root.add(disc);
+  k.near.add(disc);
   const stand = new THREE.BufferGeometry();
   v.props.forEach((p, i) => {
     if (i === 0) { p.disc = disc; return; }
@@ -213,7 +266,7 @@ function navLights(k: Kit, y: number, size: number, frac = 0.82) {
     const front = m.z < -1e-3;
     const g = new THREE.BoxGeometry(size * 1.8, size * 0.7, size);
     place(g, m.x * frac, y, m.z * frac, 0, -Math.atan2(m.z, m.x), 0);
-    k.glow.add(g, { color: front ? hdr(BRAND.light, 2.6) : hdr('#ff5040', 2.4) });
+    k.glow.add(g, { color: front ? BRAND.light : '#ff5040', emit: front ? 2.6 : 2.4, rough: 0.4, metal: 0 });
   }
 }
 
@@ -275,6 +328,8 @@ function buildSpark(spec: DroneSpec): DroneVisual {
   k.frame.add(place(new THREE.SphereGeometry(0.0065, 8, 6), aTip.x, aTip.y, aTip.z), acc);
   navLights(k, -0.006, 0.007, 0.74);
   addTierProps(k, 0.026, 3);
+  midRotors(k, 0.026);
+  farSilhouette(k, [0.06, 0.05, 0.14], 0.025);
   return finish(k);
 }
 
@@ -312,6 +367,8 @@ function buildBolt(spec: DroneSpec): DroneVisual {
   }
   navLights(k, -0.012, 0.009);
   addTierProps(k, 0.032, 2);
+  midRotors(k, 0.032);
+  farSilhouette(k, [0.09, 0.09, 0.24], -0.01, p => p.add(place(new THREE.CapsuleGeometry(0.04, 0.07, 2, 6), 0, -0.058, 0.01, Math.PI / 2), TANK));
   return finish(k);
 }
 
@@ -330,8 +387,8 @@ function buildStorm(spec: DroneSpec): DroneVisual {
   // EMP emitter: dark glass dome under a floating coil. The halo is the STORM silhouette.
   k.frame.add(place(new THREE.SphereGeometry(0.06, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), 0, 0.052, 0), GLASS);
   const coilY = 0.135, coilR = 0.125;
-  k.glow.add(place(new THREE.TorusGeometry(coilR, 0.0085, 6, 48), 0, coilY, 0, Math.PI / 2), { color: hdr(spec.accent, 2.2) });
-  k.glow.add(place(new THREE.TorusGeometry(coilR * 0.62, 0.005, 5, 36), 0, coilY - 0.012, 0, Math.PI / 2), { color: hdr(spec.accent, 1.6) });
+  k.glow.add(place(new THREE.TorusGeometry(coilR, 0.0085, 6, 48), 0, coilY, 0, Math.PI / 2), { color: spec.accent, emit: 2.2, rough: 0.4, metal: 0 });
+  k.glow.add(place(new THREE.TorusGeometry(coilR * 0.62, 0.005, 5, 36), 0, coilY - 0.012, 0, Math.PI / 2), { color: spec.accent, emit: 1.6, rough: 0.4, metal: 0 });
   for (let i = 0; i < 3; i++) {
     const a = i * Math.PI * 2 / 3 + Math.PI / 2;
     k.frame.add(rod(v3(Math.cos(a) * 0.075, 0.05, Math.sin(a) * 0.075), v3(Math.cos(a) * coilR, coilY, Math.sin(a) * coilR), 0.004, 6), CARBON);
@@ -357,6 +414,8 @@ function buildStorm(spec: DroneSpec): DroneVisual {
   }
   navLights(k, -0.016, 0.011);
   addTierProps(k, 0.036, 2);
+  midRotors(k, 0.036);
+  farSilhouette(k, [0.22, 0.08, 0.22], 0, p => p.add(place(new THREE.TorusGeometry(0.125, 0.014, 3, 12), 0, 0.135, 0, Math.PI / 2), { color: spec.accent, emit: 2.2 }));
   return finish(k);
 }
 
@@ -374,7 +433,7 @@ function buildNova(spec: DroneSpec): DroneVisual {
   k.frame.add(place(new THREE.CylinderGeometry(0.014, 0.014, 0.01, 12), 0, 0.0, -0.198, Math.PI / 2), GLASS);
   // NOVA core: a glowing orb in a gimbal cage on a pedestal. The orb is the NOVA silhouette.
   k.frame.add(place(new THREE.CylinderGeometry(0.03, 0.045, 0.05, 12), 0, 0.09, 0), CARBON);
-  k.glow.add(place(new THREE.IcosahedronGeometry(0.055, 2), 0, 0.165, 0), { color: hdr(BRAND.light, 3.2) });
+  k.glow.add(place(new THREE.IcosahedronGeometry(0.055, 2), 0, 0.165, 0), { color: BRAND.light, emit: 3.2, rough: 0.3, metal: 0 });
   k.frame.add(place(new THREE.TorusGeometry(0.078, 0.0055, 6, 40), 0, 0.165, 0, 0, 0, 0), METAL);
   k.frame.add(place(new THREE.TorusGeometry(0.078, 0.0055, 6, 40), 0, 0.165, 0, 0, Math.PI / 2, 0), METAL);
   k.frame.add(place(new THREE.TorusGeometry(0.078, 0.0055, 6, 40), 0, 0.165, 0, Math.PI / 2, 0, 0), acc);
@@ -403,6 +462,8 @@ function buildNova(spec: DroneSpec): DroneVisual {
   }
   navLights(k, -0.03, 0.013, 0.7);
   addTierProps(k, 0.036, 2);
+  midRotors(k, 0.036);
+  farSilhouette(k, [0.28, 0.14, 0.36], 0.0, p => p.add(place(new THREE.OctahedronGeometry(0.07, 1), 0, 0.165, 0), { color: BRAND.light, emit: 3.2 }));
   return finish(k);
 }
 

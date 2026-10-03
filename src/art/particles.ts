@@ -80,7 +80,7 @@ void main(){
     core = smoothstep(0.4, 0.0, r);
   } else if (vShape < 2.5) {
     float r = length(vUv);
-    float w = mix(0.22, 0.05, vF);
+    float w = mix(0.11, 0.03, vF);
     a = smoothstep(w, 0.0, abs(r - (1.0 - w)));
     core = a * 0.5;
   } else {
@@ -95,7 +95,11 @@ void main(){
   if (a < 0.003) discard;
   float fade = vC.a * (1.0 - vF * vF);
   vec3 col = vC.rgb * (1.0 + core * 1.5);
-  if (uThermal > 0.5) col = ironbow(0.55 + 0.45 * fade) * 2.0;
+  #ifdef ALPHA_POOL
+    if (uThermal > 0.5) col = ironbow(0.22 + 0.1 * fade);     // smoke and mist read cool
+  #else
+    if (uThermal > 0.5) col = ironbow(0.55 + 0.45 * fade) * 2.0;   // sparks read hot
+  #endif
   #ifdef ALPHA_POOL
     gl_FragColor = vec4(col, a * fade);
   #else

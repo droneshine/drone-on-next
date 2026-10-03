@@ -8,10 +8,10 @@ import { shared, GLSL_IRONBOW } from './kit';
 // shooter's colour so you can tell your own fire from incoming fire.
 
 const TIER_BOLT: Record<TierId, { width: number; len: number; core: number }> = {
-  spark: { width: 0.075, len: 1.5, core: 7 },
-  bolt: { width: 0.085, len: 1.7, core: 7.5 },
-  storm: { width: 0.1, len: 1.9, core: 8 },
-  nova: { width: 0.115, len: 2.2, core: 8.5 },
+  spark: { width: 0.05, len: 1.6, core: 7 },
+  bolt: { width: 0.055, len: 1.8, core: 7.5 },
+  storm: { width: 0.064, len: 2.0, core: 8 },
+  nova: { width: 0.074, len: 2.3, core: 8.5 },
 };
 
 const VERT = /* glsl */`
@@ -41,16 +41,22 @@ ${GLSL_IRONBOW}
 void main(){
   float x = max(abs(vUv.x) * vRatio - (vRatio - 1.0), 0.0);
   float r = length(vec2(x, vUv.y));
-  float core = smoothstep(0.32, 0.12, r);
-  float halo = exp(-r * r * 9.0) * 0.9;
+  // a tracer, not a tube: hot narrow head, the tail thins and fades behind it
+  float along = clamp((vUv.x * vRatio + vRatio) / (2.0 * vRatio), 0.0, 1.0);
+  float taper = mix(0.35, 1.0, smoothstep(0.0, 0.8, along));
+  float core = smoothstep(0.17 * taper, 0.05 * taper, r);
+  float halo = exp(-r * r / (taper * taper) * 11.0) * 0.75;
+  float fade = mix(0.1, 1.0, smoothstep(0.0, 0.9, along));
+  core *= fade; halo *= fade;
   if (core + halo < 0.004) discard;
-  vec3 coreCol = vec3(0.71, 0.97, 0.54) * vCore;
-  vec3 col = coreCol * core + vGlow * halo * 2.2;
+  vec3 coreCol = mix(vec3(0.71, 0.97, 0.54), vec3(1.0), 0.35) * vCore;
+  vec3 col = coreCol * core + vGlow * halo * 1.8;
   if (uThermal > 0.5) col = ironbow(0.97) * (core * 4.0 + halo * 1.5);
   gl_FragColor = vec4(col, 1.0);
 }`;
 
 const _d = new THREE.Vector3();
+const _out = new THREE.Vector3();
 
 export class BoltPool {
   readonly mesh: THREE.Mesh;
@@ -69,7 +75,8 @@ export class BoltPool {
   private live = 0;
   readonly capacity: number;
 
-  constructor(capacity = 256) {
+  /** sized for 300 live bolts (50 drones) with headroom; when full the oldest bolt is recycled */
+  constructor(capacity = 512) {
     this.capacity = capacity;
     const g = this.geo = new THREE.InstancedBufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
@@ -101,7 +108,7 @@ export class BoltPool {
     if (slot === undefined) {
       // pool full: recycle the oldest live bolt rather than dropping the new shot
       let oldest = Infinity, pick = 0;
-      for (const [h, s] of this.slotOf) if (h < oldest) { oldest = h; pick = s; }
+      for (let s = 0; s < this.capacity; s++) { const h = this.handleAt[s]; if (h > 0 && h < oldest) { oldest = h; pick = s; } }
       this.release(pick);
       slot = this.free.pop()!;
     }
@@ -110,13 +117,15 @@ export class BoltPool {
     this.handleAt[slot] = h;
     const t = TIER_BOLT[tier] ?? TIER_BOLT.spark;
     _d.copy(dir).normalize();
-    this.origin.set([pos.x, pos.y, pos.z], slot * 3);
-    this.dir.set([_d.x, _d.y, _d.z], slot * 3);
+    const i3 = slot * 3;
+    this.origin[i3] = pos.x; this.origin[i3 + 1] = pos.y; this.origin[i3 + 2] = pos.z;
+    this.dir[i3] = _d.x; this.dir[i3 + 1] = _d.y; this.dir[i3 + 2] = _d.z;
     this.len[slot] = t.len;
     this.write(this.head, slot, pos.x, pos.y, pos.z);
     this.write(this.tail, slot, pos.x - _d.x * 0.05, pos.y - _d.y * 0.05, pos.z - _d.z * 0.05);
     this.write(this.glow, slot, glow.r, glow.g, glow.b);
-    (this.par.array as Float32Array).set([t.width, t.core, 0, 1], slot * 4);
+    const pa = this.par.array as Float32Array, i4 = slot * 4;
+    pa[i4] = t.width; pa[i4 + 1] = t.core; pa[i4 + 2] = 0; pa[i4 + 3] = 1;
     this.touch(this.par, slot);
     this.live++;
     this.mesh.visible = true;
@@ -133,14 +142,14 @@ export class BoltPool {
     this.write(this.tail, slot, pos.x - d[i] * L, pos.y - d[i + 1] * L, pos.z - d[i + 2] * L);
   }
 
-  /** returns the bolt's direction (for impact sparks) or null for a stale handle */
+  /** returns the bolt's direction (a shared scratch vector, for impact sparks) or null for a stale handle */
   remove(handle: number): THREE.Vector3 | null {
     const slot = this.slotOf.get(handle);
     if (slot === undefined) return null;
     const i = slot * 3;
-    const dir = new THREE.Vector3(this.dir[i], this.dir[i + 1], this.dir[i + 2]);
+    _out.set(this.dir[i], this.dir[i + 1], this.dir[i + 2]);
     this.release(slot);
-    return dir;
+    return _out;
   }
 
   private release(slot: number) {

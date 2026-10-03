@@ -205,7 +205,7 @@ void main(){
   float core = pow(abs(dot(V, vN)), 2.0);
   float fade = pow(1.0 - vY, 1.6);
   float pulse = smoothstep(0.08, 0.0, abs(fract(vY * 3.0 - uTime * 0.6) - 0.5) - 0.42);
-  float a = (core * 0.55 + pulse * 0.35) * fade * uOn;
+  float a = (core * 0.32 + pulse * 0.28) * fade * uOn;
   gl_FragColor = vec4(uColor * a * 1.6, 1.0);
 }`;
 
@@ -247,10 +247,10 @@ export class RingImpl implements RingVisual {
     this.object.userData.noThermal = true;
     this.object.userData.ringKind = kind;
     if (kind === 'bigshine') {
-      const sm = new THREE.SpriteMaterial({ map: plusThree(), transparent: true, depthWrite: false });
+      const sm = new THREE.SpriteMaterial({ map: plusThree(), transparent: true, depthWrite: false, color: new THREE.Color(1.8, 1.8, 1.8) });
       this.label = new THREE.Sprite(sm);
-      this.label.scale.set(1.3, 0.65, 1);
-      this.label.position.set(0, radius + 0.75, 0);
+      this.label.scale.set(2.0, 1.0, 1);
+      this.label.position.set(0, radius + 0.9, 0);
       this.label.userData.noThermal = true;
       this.object.add(this.label);
     }
