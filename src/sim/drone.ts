@@ -70,7 +70,7 @@ export class DroneSim {
 
   legHeight() {
     const s = this.spec;
-    return s.model === 'racer' ? 0.012 : s.model === 'dsolar' ? 0.72 : s.model === 'dscan' ? 0.3 : s.model === 'cine' ? 0.335 : s.armLength * 0.6;
+    return s.model === 'racer' ? 0.012 : s.model === 'dsolar' ? 0.454 : s.model === 'dsolarmax' ? 0.8 : s.model === 'dscan' ? 0.3 : s.model === 'cine' ? 0.335 : s.armLength * 0.6;
   }
 
   get totalMass() { return this.spec.mass + this.payload; }

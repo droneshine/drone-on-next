@@ -6,7 +6,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { World, TimeOfDay } from '../world/world';
 import { DroneSim, Sticks } from '../sim/drone';
-import { DroneSpec, FEATURED, FlightMode } from '../sim/spec';
+import { DroneSpec, FEATURED, FlightMode, featured } from '../sim/spec';
 import { buildDroneVisual, animateProps, DroneVisual } from '../render/droneModels';
 import { Particles, Hose } from '../render/effects';
 import { Input } from '../input/input';
@@ -75,7 +75,7 @@ export class Game {
   settings: Settings;
   state: State = 'boot';
   camMode: CamMode = 'orbit';
-  spec: DroneSpec = FEATURED[2];
+  spec: DroneSpec = featured('dscan');
   sim!: DroneSim;
   visual!: DroneVisual;
   particles = new Particles(7000);
@@ -270,7 +270,7 @@ export class Game {
     this.mission = m;
     this.state = 'mission';
     this.builder.clear();
-    const spec = FEATURED.find(f => f.id === m.drone) ?? FEATURED[2];
+    const spec = FEATURED.find(f => f.id === m.drone) ?? featured('dscan');
     const useSpec = m.lockDrone || !this.spec ? spec : this.spec.featured || this.spec.model === 'generic' ? (m.lockDrone ? spec : this.spec) : spec;
     await this.setDrone(m.lockDrone ? spec : useSpec, m.spawn(this.world));
     if (m.wind) this.world.setWind(m.wind.speed, m.wind.dir, m.wind.gust);
@@ -654,7 +654,7 @@ export class Game {
       fov = THREE.MathUtils.clamp(70 - d * 0.35, 18, 70);
     } else {
       const L = this.spec.armLength * 2 + this.spec.propDiameter;
-      const dist = Math.max(2.4, L * 3.2);
+      const dist = Math.max(2.4, L * (L > 2 ? 2.3 : 3.2));
       const yaw = s.heading();
       const behind = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
       const want = s.pos.clone().addScaledVector(behind, dist).add(new THREE.Vector3(0, dist * 0.38 + 0.3, 0));

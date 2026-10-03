@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { DroneSpec, motorLayout } from '../sim/spec';
+import { buildDSolarMT50, buildDSolarMT100 } from './dsolarModels';
 
 // Procedural models, built to the proportions of the real aircraft. Body frame
 // matches the sim: x right, y up, forward is -z. Props are separate so they can
@@ -16,7 +17,7 @@ export interface DroneVisual {
   leds: THREE.Mesh[];
 }
 
-const mats = {
+export const mats = {
   carbon: () => new THREE.MeshStandardMaterial({ color: '#1c1e1d', roughness: 0.38, metalness: 0.35 }),
   black: () => new THREE.MeshStandardMaterial({ color: '#121212', roughness: 0.6, metalness: 0.2 }),
   motor: () => new THREE.MeshStandardMaterial({ color: '#191919', roughness: 0.3, metalness: 0.85 }),
@@ -27,11 +28,11 @@ const mats = {
   glass: () => new THREE.MeshStandardMaterial({ color: '#0a1116', roughness: 0.05, metalness: 0.9 }),
 };
 
-function cyl(r1: number, r2: number, h: number, m: THREE.Material, seg = 12) { return new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, seg), m); }
-function bx(w: number, h: number, d: number, m: THREE.Material) { return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); }
+export function cyl(r1: number, r2: number, h: number, m: THREE.Material, seg = 12) { return new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, seg), m); }
+export function bx(w: number, h: number, d: number, m: THREE.Material) { return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m); }
 
 /** tube from a to b */
-function tube(a: THREE.Vector3, b: THREE.Vector3, r: number, m: THREE.Material, seg = 10) {
+export function tube(a: THREE.Vector3, b: THREE.Vector3, r: number, m: THREE.Material, seg = 10) {
   const len = a.distanceTo(b);
   const mesh = cyl(r, r, len, m, seg);
   mesh.position.copy(a).add(b).multiplyScalar(0.5);
@@ -73,7 +74,7 @@ function mergeSimple(geos: THREE.BufferGeometry[]) {
   return out;
 }
 
-function addProps(v: DroneVisual, spec: DroneSpec, hubH: number, bladeCount: number, bladeColor = '#141414', motorR?: number) {
+export function addProps(v: DroneVisual, spec: DroneSpec, hubH: number, bladeCount: number, bladeColor = '#141414', motorR?: number) {
   const D = spec.propDiameter;
   const geo = propGeometry(D, bladeCount);
   const bmat = new THREE.MeshStandardMaterial({ color: bladeColor, roughness: 0.4, metalness: 0.1, side: THREE.DoubleSide });
@@ -103,7 +104,7 @@ function addProps(v: DroneVisual, spec: DroneSpec, hubH: number, bladeCount: num
   }
 }
 
-function ledPair(v: DroneVisual, spec: DroneSpec) {
+export function ledPair(v: DroneVisual, spec: DroneSpec) {
   // nav lights on the motor arms: front green, rear red, like real aircraft
   for (const m of motorLayout(spec)) {
     if (m.y < 0) continue;
@@ -192,51 +193,6 @@ function buildDScan(spec: DroneSpec): DroneVisual {
   const lens2 = cyl(0.009, 0.009, 0.01, mats.glass(), 16); lens2.rotation.x = Math.PI / 2; lens2.position.set(0.016, -0.03, -0.03); gimbal.add(lens2);
   v.root.add(gimbal); v.gimbal = gimbal;
   v.fpvCam.set(0, -0.15, -0.2);
-  ledPair(v, spec);
-  return v;
-}
-
-// --------------------------------------------------------------------- DSolar
-function buildDSolar(spec: DroneSpec): DroneVisual {
-  const v: DroneVisual = { root: new THREE.Group(), props: [], nozzles: [], fpvCam: new THREE.Vector3(0, -0.15, -0.55), leds: [] };
-  const L = spec.armLength;
-  const green = mats.plastic('#1f5e2c', 0.32);
-  const black = mats.black();
-  // angular canopy: stacked bevelled boxes
-  const canopy = new THREE.Group();
-  const c1 = bx(0.62, 0.34, 0.8, green); c1.position.y = 0.06; canopy.add(c1);
-  const c2 = bx(0.5, 0.16, 0.7, green); c2.position.y = 0.29; canopy.add(c2);
-  const c3 = bx(0.66, 0.08, 0.5, green); c3.position.set(0, 0.2, 0.05); canopy.add(c3);
-  for (const s of [-1, 1]) { const ridge = bx(0.05, 0.36, 0.82, green); ridge.position.set(s * 0.33, 0.04, 0); ridge.rotation.z = s * 0.15; canopy.add(ridge); }
-  for (const x of [-0.12, 0.12]) { const cap = cyl(0.07, 0.07, 0.05, black, 16); cap.position.set(x, 0.39, -0.12); canopy.add(cap); }
-  v.root.add(canopy);
-  // brand sparkle on the nose
-  const sp = sparkleMesh(0.16, '#f7f7f2'); sp.position.set(0, 0.1, -0.402); v.root.add(sp);
-  // tank
-  const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.22, 0.5, 20), mats.white());
-  tank.position.y = -0.35; v.root.add(tank);
-  const tankCap = cyl(0.23, 0.23, 0.06, black, 20); tankCap.position.y = -0.1; v.root.add(tankCap);
-  // arms
-  const carbon = mats.carbon();
-  for (const m of motorLayout(spec)) {
-    const dir = new THREE.Vector3(m.x, 0, m.z).normalize();
-    v.root.add(tube(dir.clone().multiplyScalar(0.3), new THREE.Vector3(m.x, 0, m.z), 0.035, carbon));
-    const fold = bx(0.12, 0.09, 0.12, black); fold.position.copy(dir.clone().multiplyScalar(0.38)); v.root.add(fold);
-    const esc = bx(0.16, 0.08, 0.12, black); esc.position.set(m.x, -0.02, m.z).addScaledVector(dir, -0.14); esc.rotation.y = -Math.atan2(dir.z, dir.x); v.root.add(esc);
-    // nozzle under the motor
-    const noz = cyl(0.015, 0.02, 0.12, mats.plastic('#c79b2c', 0.4)); noz.position.set(m.x * 0.82, -0.22, m.z * 0.82); v.root.add(noz);
-    const tip = cyl(0.012, 0.012, 0.02, mats.plastic('#c43c1c', 0.5)); tip.position.set(m.x * 0.82, -0.29, m.z * 0.82); v.root.add(tip);
-    v.nozzles.push({ pos: new THREE.Vector3(m.x * 0.82, -0.3, m.z * 0.82), dir: new THREE.Vector3(0, -1, 0) });
-  }
-  addProps(v, spec, 0.09, 2, '#1a1a1a', 0.1);
-  // tubular landing frame
-  const legH = 0.72;
-  for (const s of [-1, 1]) {
-    const pts = [new THREE.Vector3(s * 0.25, -0.15, -0.35), new THREE.Vector3(s * 0.42, -legH + 0.03, -0.42), new THREE.Vector3(s * 0.42, -legH + 0.03, 0.42), new THREE.Vector3(s * 0.25, -0.15, 0.35)];
-    v.root.add(tube(pts[0], pts[1], 0.022, black), tube(pts[1], pts[2], 0.026, black), tube(pts[2], pts[3], 0.022, black));
-    const brace = tube(new THREE.Vector3(s * 0.32, -0.42, -0.38), new THREE.Vector3(-s * 0.0, -0.42, -0.38), 0.016, black); v.root.add(brace);
-  }
-  const bar = tube(new THREE.Vector3(-0.42, -0.5, 0), new THREE.Vector3(0.42, -0.5, 0), 0.02, black); v.root.add(bar);
   ledPair(v, spec);
   return v;
 }
@@ -349,7 +305,7 @@ function buildGeneric(spec: DroneSpec): DroneVisual {
   return v;
 }
 
-function sparkleMesh(size: number, color: string) {
+export function sparkleMesh(size: number, color: string) {
   const shape = new THREE.Shape();
   const r = size / 2, w = size * 0.09;
   shape.moveTo(0, r);
@@ -381,7 +337,8 @@ export async function buildDroneVisual(spec: DroneSpec): Promise<DroneVisual> {
   let v: DroneVisual;
   switch (spec.model) {
     case 'dscan': v = buildDScan(spec); break;
-    case 'dsolar': v = buildDSolar(spec); break;
+    case 'dsolar': v = buildDSolarMT50(spec); break;
+    case 'dsolarmax': v = buildDSolarMT100(spec); break;
     case 'dshine': v = buildDShine(spec); break;
     case 'racer': v = buildRacer(spec); break;
     case 'cine': v = buildCine(spec); break;

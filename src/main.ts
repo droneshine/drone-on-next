@@ -1,7 +1,8 @@
 import './ui/style.css';
+import * as THREE from 'three';
 import { Game } from './game/game';
 import { UI, mapFromHash, lastDroneId } from './ui/ui';
-import { FEATURED } from './sim/spec';
+import { FEATURED, featured } from './sim/spec';
 import { listCustomDrones } from './game/store';
 import { audio } from './audio/audio';
 
@@ -25,11 +26,13 @@ async function boot() {
   step(0.7);
   const id = lastDroneId();
   const custom = await listCustomDrones();
-  const spec = [...FEATURED, ...custom].find(s => s.id === id) ?? FEATURED[2];
+  const spec = [...FEATURED, ...custom].find(s => s.id === id) ?? featured('dscan');
   await game.setDrone(spec);
   step(0.9);
   const ui = new UI(game);
   (window as unknown as { droneon: unknown }).droneon = { game, ui };
+  // dev only: QA rigs in tools/ render with the same THREE instance
+  if (import.meta.env.DEV) (window as unknown as { THREE: unknown }).THREE = THREE;
   game.start();
   const shared = await mapFromHash();
   await game.enterMenu();

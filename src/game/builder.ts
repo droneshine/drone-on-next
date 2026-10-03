@@ -91,7 +91,7 @@ export function buildPiece(p: Piece): Built {
       add(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 5, 8), mat('pole', () => new THREE.MeshStandardMaterial({ color: '#ddd', metalness: 0.6 }))), { kind: 'cyl', radius: 0.08 * s, halfH: 2.5 * s }, new THREE.Vector3(0, 2.5, 0));
       add(new THREE.Mesh(new THREE.PlaneGeometry(1.6, 1), mat('flagc', () => new THREE.MeshStandardMaterial({ color: COL.accent, side: THREE.DoubleSide, emissive: COL.accent, emissiveIntensity: 0.2 }))), null, new THREE.Vector3(0.8, 4.4, 0));
       const pad = new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 0.08, 32), mat('startpad', () => new THREE.MeshStandardMaterial({ color: '#2a2e2b', roughness: 0.8 })));
-      add(pad, { kind: 'box', half: sc(new THREE.Vector3(1.6, 0.04, 1.6)) }, new THREE.Vector3(0, 0.04, 2.6));
+      add(pad, { kind: 'box', half: sc(new THREE.Vector3(1.6, 0.04, 1.6)) }, new THREE.Vector3(3.4, 0.04, 0));
       break;
     }
   }
@@ -159,7 +159,7 @@ export class Builder {
     const i = this.map.pieces.findIndex(p => p.t === 'flag');
     if (i < 0) return null;
     const p = this.map.pieces[i];
-    const off = new THREE.Vector3(0, 0.1, 2.6 * (p.s || 1)).applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(p.r));
+    const off = new THREE.Vector3(3.4 * (p.s || 1), 0.1, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(p.r));
     return { pos: new THREE.Vector3(p.x, p.y, p.z).add(off), yaw: THREE.MathUtils.degToRad(p.r) + Math.PI };
   }
 

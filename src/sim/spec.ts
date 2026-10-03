@@ -4,7 +4,7 @@
 export type FlightMode = 'acro' | 'angle' | 'gps';
 export type Tool = 'none' | 'sprayDown' | 'lance' | 'thermal' | 'camera';
 export type Layout = 'quadX' | 'hexX' | 'octoX' | 'coaxX8';
-export type ModelKind = 'dsolar' | 'dshine' | 'dscan' | 'racer' | 'cine' | 'generic';
+export type ModelKind = 'dsolar' | 'dsolarmax' | 'dshine' | 'dscan' | 'racer' | 'cine' | 'generic';
 
 export interface Rates {
   rcRate: number;    // Betaflight style
@@ -50,13 +50,25 @@ export interface DroneSpec {
 export const FEATURED: DroneSpec[] = [
   {
     id: 'dsolar', name: 'DSolar', author: 'DroneShine', featured: true,
-    tagline: 'Solar park cleaning platform. 50 L tank, Dual RTK, four X13 drives.',
+    // MT50 platform: 2330 mm wheelbase, X13 drives, 30 kg frame + 2 x 18S 46 Ah, 30 kg payload, 90 kg MTOW
+    tagline: 'Solar park cleaning platform. 30 L tank, four X13 drives, 55 minutes empty, 30 full.',
     model: 'dsolar', color: '#1f5e2c', accent: '#f2f2ee', layout: 'quadX',
-    armLength: 1.05, propDiameter: 1.37, mass: 52, maxThrust: 360, motorTau: 0.11,
-    dragArea: 0.55, battery: { cells: 18, capacityAh: 30 },
-    defaultMode: 'gps', maxTilt: 22, maxSpeed: 10, maxClimb: 3, maxYawRate: 90,
+    armLength: 1.165, propDiameter: 1.32, mass: 60, maxThrust: 360, motorTau: 0.11,
+    dragArea: 0.5, battery: { cells: 18, capacityAh: 92 },
+    defaultMode: 'gps', maxTilt: 20, maxSpeed: 5, maxClimb: 5, maxYawRate: 80,
     rates: { rcRate: 0.7, superRate: 0.4, expo: 0.2 }, camUptilt: -20,
-    tool: 'sprayDown', tank: 50, flow: 6,
+    tool: 'sprayDown', tank: 30, flow: 5,
+  },
+  {
+    // MT100 platform: 2300 mm wheelbase, 1420 mm props, T14 drives, 50 kg frame + 2 x 18S 35 Ah, 100 kg payload, 200 kg MTOW
+    id: 'dsolarmax', name: 'DSolar Max', author: 'DroneShine', featured: true,
+    tagline: 'The heavy one. 100 L tank, four T14 drives, 200 kg take off, 25 minutes empty, 9 full.',
+    model: 'dsolarmax', color: '#1f5e2c', accent: '#f2f2ee', layout: 'quadX',
+    armLength: 1.15, propDiameter: 1.42, mass: 100, maxThrust: 680, motorTau: 0.14,
+    dragArea: 0.85, battery: { cells: 18, capacityAh: 70 },
+    defaultMode: 'gps', maxTilt: 20, maxSpeed: 15, maxClimb: 5, maxYawRate: 70,
+    rates: { rcRate: 0.6, superRate: 0.35, expo: 0.2 }, camUptilt: -20,
+    tool: 'sprayDown', tank: 100, flow: 12,
   },
   {
     id: 'dshine', name: 'DShine', author: 'DroneShine', featured: true,
@@ -125,7 +137,7 @@ export function motorLayout(spec: DroneSpec): { x: number; z: number; y: number;
 }
 
 export function validateSpec(raw: unknown): DroneSpec {
-  const base = FEATURED[3];
+  const base = featured('shine5');
   const r = (raw ?? {}) as Partial<DroneSpec>;
   const num = (v: unknown, d: number, lo: number, hi: number) =>
     typeof v === 'number' && isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d;
@@ -173,3 +185,5 @@ export function validateSpec(raw: unknown): DroneSpec {
     glbOffsetY: num(r.glbOffsetY, 0, -5, 5),
   };
 }
+
+export function featured(id: string): DroneSpec { return FEATURED.find(f => f.id === id) ?? FEATURED[0]; }

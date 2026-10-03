@@ -131,7 +131,7 @@ function ringRun(): Mission {
 // ------------------------------------------------------------------ 3
 function solarShift(): Mission {
   const rows = [9, 10, 11];
-  let litres = 50, clean = 0;
+  let litres = 30, clean = 0;
   const objs: Objective[] = [
     { text: 'Fly to rows J, K and L of the solar park', done: false },
     { text: 'Clean at least 80 % of the three rows', done: false },
@@ -140,11 +140,11 @@ function solarShift(): Mission {
   let phase = 0;
   return {
     id: 'solar-shift', title: 'Solar Shift', skill: 'Contactless cleaning', drone: 'dsolar', lockDrone: true,
-    brief: 'The real DSolar job. 50 litres of demineralised water, three soiled rows. Hold Space or A to spray. Two to three metres above the glass cleans best, any lower and the downwash turns into a hazard.',
+    brief: 'The real DSolar job. 30 litres of demineralised water, three soiled rows. Hold Space or A to spray. Two to three metres above the glass cleans best, any lower and the downwash turns into a hazard.',
     wind: { speed: 2.5, dir: 60, gust: 0.25 },
     spawn: (w) => ({ pos: w.pads[0].clone(), yaw: Math.PI }),
     start(ctx) {
-      litres = 50; clean = 0; phase = 0; objs.forEach(o => o.done = false);
+      litres = 30; clean = 0; phase = 0; objs.forEach(o => o.done = false);
       ctx.world.solar.soil(1, 11);
       ctx.sim.payload = litres;
       const r = ctx.world.solar.rows[10];
@@ -153,7 +153,7 @@ function solarShift(): Mission {
     update(ctx, dt) {
       const s = ctx.sim;
       if (s.crashed) { this.failReason = 'DSolar went down. In a real park that is a six figure repair.'; return 'fail'; }
-      if (ctx.spraying && litres > 0) { litres = Math.max(0, litres - 6 / 60 * dt); s.payload = litres; }
+      if (ctx.spraying && litres > 0) { litres = Math.max(0, litres - 5 / 60 * dt); s.payload = litres; }
       if (phase === 0) {
         const r = ctx.world.solar.rows[10];
         if (Math.abs(s.pos.z - r.z) < 18 && s.pos.x > r.x0 - 5 && s.pos.x < r.x1 + 5) { phase = 1; objs[0].done = true; ctx.marker(null); ctx.chime(1); }
@@ -169,7 +169,7 @@ function solarShift(): Mission {
     hud: () => `Tank ${litres.toFixed(1)} L   Clean ${(clean * 100).toFixed(0)} %`,
     result(ctx) {
       const t = ctx.time;
-      return { stars: Math.max(1, starsBy(clean, 0.95, 0.88, 0.8)), score: `${(clean * 100).toFixed(1)} %`, detail: `${(50 - litres).toFixed(1)} L water used in ${fmt(t)}`, time: t };
+      return { stars: Math.max(1, starsBy(clean, 0.95, 0.88, 0.8)), score: `${(clean * 100).toFixed(1)} %`, detail: `${(30 - litres).toFixed(1)} L water used in ${fmt(t)}`, time: t };
     },
   };
 }
