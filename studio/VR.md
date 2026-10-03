@@ -53,19 +53,22 @@ Target: 72 fps on Quest 2, better on Quest 3. Quest 2 has 13.9 ms per frame for 
 | Trees | all | half on Quest 2 |
 | Clouds | two six octave noise layers | one three octave layer |
 | Antialiasing | composer MSAA | 4x MSAA in the headset framebuffer, fixed foveation (full on Quest 2, half on Quest 3) |
+| Resolution and frame rate | window size | Quest 2: recommended eye buffer (scale 1.0), 72 Hz. Quest 3: scale 1.2 for a sharper picture, and after the first seconds it asks for 90 Hz when the frame has room |
 
-If frames still run long for two seconds, the game steps down on its own, in the order the eye misses least: full foveation, no grass, fewer trees, more small drone parts left out, no clouds.
+If frames still run long for two seconds, the game steps down on its own, in the order the eye misses least: back to 72 Hz, full foveation, no grass, fewer trees, more small drone parts left out, no clouds.
 
 Measured on the studio laptop (Snapdragon X, Adreno X1 45 GPU) through the emulator, GPU work finished every frame:
 
 | | Draw calls per frame | Triangles | GPU time |
 |---|---|---|---|
 | Flat game, composer, 1280 x 720 | about 260 + 220 shadow | | 2.8 to 5.6 ms |
-| VR PILOT, Quest 2 profile, 2 x 1440 x 1584 | 190 | 0.82 M | 2.5 ms |
-| VR PILOT, Quest 3 profile, 2 x 1680 x 1760 | 190 | 1.18 M | 2.7 ms |
-| VR GOGGLES | 60 to 140 | 0.3 to 0.6 M | 1.4 to 1.6 ms |
+| VR PILOT, Quest 2 profile, 2 x 1440 x 1584 | 170 to 190 | 0.8 M | 2.5 to 3.8 ms |
+| VR PILOT, Quest 3 profile, 2 x 2016 x 2112 | 190 | 1.2 M | 2.7 to 3.6 ms |
+| VR GOGGLES, both profiles | 60 to 140 | 0.3 to 0.6 M | 1.4 to 4.5 ms |
 
-The laptop GPU is roughly 1.5 to 2 times a Quest 2 GPU, so PILOT should land around 4 to 6 ms GPU on a Quest 2 plus the MSAA resolve, well inside 13.9 ms. The CPU is the tighter side: a VR frame costs 2 to 5 ms of main thread time on the laptop, and a Quest 2 core is about three to four times slower. That is why the draw call count was the main target. Only a real headset can confirm this.
+(The spread is the laptop GPU changing its clock between runs.)
+
+The laptop GPU is roughly 1.5 to 2 times a Quest 2 GPU and below a Quest 3 GPU, so PILOT should land around 5 to 8 ms GPU on a Quest 2 including the MSAA resolve, inside 13.9 ms, and well inside 11.1 ms (90 Hz) on a Quest 3. The CPU is the tighter side: a VR frame costs 2 to 5 ms of main thread time on the laptop, and a Quest 2 core is about three to four times slower. That is why the draw call count was the main target. Only a real headset can confirm this.
 
 ## Known limits
 

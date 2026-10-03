@@ -214,8 +214,21 @@ const fades = await page.evaluate(async () => {
 });
 // timed from the first darkening, so the emulator's input latency does not count
 const begin = fades.find(f => f[1] > 0), peak = fades.find(f => f[1] >= 0.99), clear = peak && fades.find(f => f[0] > peak[0] && f[2] === 'goggles' && f[1] === 0);
-// design: 120 ms out, 180 ms in; headless frames are slow and uneven, so the bounds are loose
-check('view switch fades out and back in', begin && peak && clear && peak[0] - begin[0] < 250 && clear[0] - peak[0] < 500, `dark from ${begin?.[0]} ms, black at ${peak?.[0]} ms, clear at ${clear?.[0]} ms`);
+// design: 120 ms out, 180 ms in. Wall time in a shared headless browser is no measure of that (other
+// rigs load the same GPU), so this checks the order: dark, black, the view changes only while black, clear
+const switchedAt = fades.find(f => f[2] === 'goggles');
+// the durations themselves, with simulated 72 Hz frames inside one synchronous step (no real frame in between)
+const fadeSim = await page.evaluate(() => {
+  const x = window.droneon.game.xr, keep = { v: x.fadeVal, d: x.fadeDir, t: x.fadeThen, h: x.fadeHold, n: x.lastNow };
+  let switched = -1, t = 0; const dt = 1000 / 72;
+  x.fadeVal = 0; x.fadeDir = 1; x.fadeHold = 0; x.lastNow = 0; x.fadeThen = () => { switched = t; };
+  const out = { black: -1, clear: -1 };
+  for (let i = 1; i < 80; i++) { t = i * dt; x.stepFade(t); const o = x.fade.material.opacity; if (out.black < 0 && o >= 0.999) out.black = Math.round(t); if (switched >= 0 && out.clear < 0 && o === 0 && x.fadeDir < 0) out.clear = Math.round(t); }
+  Object.assign(x, { fadeVal: keep.v, fadeDir: keep.d, fadeThen: keep.t, fadeHold: keep.h, lastNow: performance.now() });
+  return { ...out, switched: Math.round(switched) };
+});
+check('fade timing at 72 Hz: out in about 120 ms, back in about 200 ms', fadeSim.black > 0 && fadeSim.black <= 140 && fadeSim.clear - fadeSim.black <= 230, JSON.stringify(fadeSim));
+check('view switch fades out and back in, the view changes while black', begin && peak && clear && switchedAt && switchedAt[0] >= peak[0] && switchedAt[1] >= 0.99 && begin[0] < peak[0] && peak[0] < clear[0], `dark from ${begin?.[0]} ms, black at ${peak?.[0]} ms, clear at ${clear?.[0]} ms`);
 await sleep(300);
 
 // thermal is a drone camera: DScan's thermal works in GOGGLES (left grip), switching back to PILOT ends it

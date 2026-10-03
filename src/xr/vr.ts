@@ -34,7 +34,7 @@ const DOWN = new THREE.Vector3(0, -1, 0);
  */
 const PROFILES = {
   low: { scale: 1.0, foveation: 1.0, grassR: 16, trees: 0.5, shadow: 1024, shadowBox: 60, rt: [1280, 720], rtSamples: 2 },
-  high: { scale: 1.0, foveation: 0.5, grassR: 24, trees: 1, shadow: 2048, shadowBox: 60, rt: [1600, 900], rtSamples: 4 },
+  high: { scale: 1.2, foveation: 0.5, grassR: 24, trees: 1, shadow: 2048, shadowBox: 60, rt: [1600, 900], rtSamples: 4 },
 } as const;
 
 /** cheap stand in for the cloud layer: same uniforms, one three octave noise instead of two six octave ones */
@@ -51,6 +51,9 @@ const CHEAP_CLOUDS = `
     vec3 col = mix(vec3(0.78,0.80,0.84), vec3(1.0, 0.99, 0.96), 0.82 + 0.18 * smoothstep(0.0, 0.6, d));
     gl_FragColor = vec4(col, c * fade * 0.92);
   }`;
+
+/** frame rate control on the session (Quest Browser), not in every DOM typing */
+type XrRates = XRSession & { frameRate?: number; supportedFrameRates?: Float32Array; updateTargetFrameRate?: (rate: number) => Promise<void> };
 
 interface Saved {
   camMode: CamMode;
@@ -75,7 +78,7 @@ export class VrMode {
   private ui: UI;
   private tier = xrTier();
   private prof: (typeof PROFILES)['low' | 'high'];
-  private xrCam = new THREE.PerspectiveCamera(70, 1, 0.05, 9000);
+  private xrCam = new THREE.PerspectiveCamera(70, 1, 0.08, 9000);
   private worldRig = new THREE.Group();
   private goggles = new Goggles();
   private hud = new XrHud();
@@ -110,6 +113,7 @@ export class VrMode {
   private shadowT = 0;
   private pausedByBlur = false;
   private refSpace: XRReferenceSpace | null = null;
+  private rateTried = false;
 
   constructor(g: Game, ui: UI) {
     this.g = g; this.ui = ui;
@@ -212,7 +216,7 @@ export class VrMode {
     this.setView('pilot');
     this.needRecenter = true;
     this.fadeVal = 1; this.fadeDir = -1; this.fadeThen = null; this.fadeHold = 3;
-    this.lastNow = performance.now(); this.lastT = 0; this.slowT = 0; this.stats.degrade = 0; this.lodK = 0.004;
+    this.lastNow = performance.now(); this.lastT = 0; this.slowT = 0; this.stats.degrade = 0; this.lodK = 0.004; this.rateTried = false;
     this.status.until = 0;
     if (g.paused) { g.paused = false; g.emit('pause', false); }
     this.active = true;
@@ -335,6 +339,12 @@ export class VrMode {
   /** frames run long for two seconds: give up one more extra, in the order the eye misses least */
   private degrade() {
     const w = this.g.world, s = this.stats;
+    const ss = this.session as XrRates | null;
+    if (ss && (ss.frameRate ?? 72) > 72 && ss.updateTargetFrameRate) {
+      ss.updateTargetFrameRate(72).catch(() => { /* stays */ });
+      console.info('VR back to 72 Hz');
+      return;
+    }
     s.degrade++;
     if (s.degrade === 1) this.g.renderer.xr.setFoveation(1);
     else if (s.degrade === 2 && w.grass) w.grass.mesh.visible = false;
@@ -459,6 +469,14 @@ export class VrMode {
       if (this.slowT > 2 && st.degrade < 5) { this.slowT = 0; this.degrade(); }
     }
     this.lastT = t;
+    // Quest 3: once the first seconds run with room to spare, ask for 90 Hz (degrade() goes back to 72 first)
+    if (this.tier === 'high' && !this.rateTried && st.frames > 300 && st.degrade === 0 && st.cpuMs < 7 && st.intervalMs < 15) {
+      this.rateTried = true;
+      const ss = this.session as XrRates;
+      if (ss.supportedFrameRates && Array.from(ss.supportedFrameRates).includes(90) && (ss.frameRate ?? 72) < 90) {
+        ss.updateTargetFrameRate?.(90).then(() => { this.slowT = 0; }).catch(() => { /* stays as it is */ });
+      }
+    }
   };
 
   /** controllers to sticks and buttons, head pose, pilot spot; runs before the game tick */
