@@ -455,7 +455,8 @@ export class Game {
     this.builder.clear();
     this.world.setThermal(false);
     // every mission is scored on its own drone
-    const spec = FEATURED.find(f => f.id === m.drone) ?? featured('dscan');
+    // Academy drills bring their own spec (the Spark is not a featured drone)
+    const spec = m.spec ?? FEATURED.find(f => f.id === m.drone) ?? featured('dscan');
     await this.setDrone(spec, m.spawn(this.world));
     if (this.mission !== m) return;
     if (m.wind) this.world.setWind(m.wind.speed, m.wind.dir, m.wind.gust);
@@ -475,10 +476,11 @@ export class Game {
 
   restartMission() {
     if (!this.mission) return;
-    const id = this.mission.id;
+    const id = this.mission.id, again = this.mission.again;
     this.endMission();
     this.missions = allMissions();
-    const m = this.missions.find(x => x.id === id)!;
+    // drills (src/academy) are not in the mission list: they rebuild themselves
+    const m = again ? again() : this.missions.find(x => x.id === id)!;
     this.startMission(m);
   }
 
@@ -641,7 +643,8 @@ export class Game {
       if (this.mission?.forceCam === 'los') this.toast('This mission is line of sight only');
       else { this.camMode = order[(order.indexOf(this.camMode) + 1) % order.length]; this.toast(camName(this.camMode)); }
     }
-    if (inp.hit('KeyM') || inp.padHit(4)) {
+    if ((inp.hit('KeyM') || inp.padHit(4)) && this.mission?.lockMode) this.toast(`This drill is flown in ${this.sim.mode.toUpperCase()} mode`);
+    else if (inp.hit('KeyM') || inp.padHit(4)) {
       const modes: FlightMode[] = ['gps', 'angle', 'acro'];
       this.setMode(modes[(modes.indexOf(this.sim.mode) + 1) % 3]);
     }
@@ -793,6 +796,13 @@ export class Game {
     c.aimRay.d.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
     const st = this.mission.update(c, dt);
     if (st !== 'running') {
+      // drills (src/academy) keep their own records and results screen; missions keep their stars below
+      const m = this.mission;
+      if (m.finish) {
+        this.result = null; this.state = 'result';
+        setTimeout(() => { if (this.state === 'result' && this.mission === m) { this.emit('state', 'result'); m.finish!(st, c); } }, st === 'fail' && this.sim.crashed ? 1200 : 250);
+        return;
+      }
       const res = st === 'success' ? this.mission.result(c) : { stars: 0, score: 'Failed', detail: this.mission.failReason || this.sim.crashReason || 'Mission failed', time: this.missionTime };
       if (st === 'success') {
         const p = progress();

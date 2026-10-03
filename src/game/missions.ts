@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { World } from '../world/world';
 import type { DroneSim } from '../sim/drone';
 import type { Collider } from '../world/colliders';
+import type { DroneSpec } from '../sim/spec';
 
 // Training missions. Each one teaches one real skill, scored in stars. The
 // three DroneShine missions are the actual jobs: clean a park, clean a facade,
@@ -45,6 +46,15 @@ export interface Mission {
   scored?: 'time' | 'percent';
   /** remove anything the mission added to the world */
   cleanup?(world: World): void;
+  // Academy drills (src/academy) reuse this machinery with four optional hooks:
+  /** fly this exact spec instead of the featured drone named in `drone` */
+  spec?: DroneSpec;
+  /** the flight mode key does nothing (HOVER LOCK is Angle only) */
+  lockMode?: boolean;
+  /** a fresh copy for an instant restart, since drills are not in allMissions() */
+  again?(): Mission;
+  /** takes over the end of a run: no stars, the drill shows its own results screen */
+  finish?(status: 'success' | 'fail', ctx: MissionCtx): void;
 }
 
 /** ring pass detection: crossing the ring plane inside the radius */

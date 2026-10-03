@@ -124,15 +124,17 @@ export class UI {
       <nav class="rail live" aria-label="Main menu">
         <img class="lockup" src="${BASE}img/lockup_white.png" alt="DroneShine" />
         <h1 class="title">DRONE<br><span>ON</span></h1>
-        <p class="lede">A free drone sim sandbox. Fly real industrial drones, train real missions, build your own Spielwiese.</p>
+        <p class="lede">Drone battle royale and a real flight sim sandbox. Train with medals, build your own drone, fly with friends.</p>
         <div class="cmds">
-          <button class="cmd primary" data-go="fly"><b>FLY</b><small>Free flight on the field, your course included</small><i class="ph ph-arrow-right"></i></button>
+          <button class="cmd primary" data-go="royale"><b>ROYALE</b><small>Twelve drones launch small, last drone flying wins</small><i class="ph ph-arrow-right"></i></button>
+          <div class="rail-first" hidden></div>
+          <button class="cmd" data-go="spielwiese"><b>SPIELWIESE</b><small>Free flight and course building on the field</small><i class="ph ph-arrow-right"></i></button>
+          <button class="cmd" data-go="academy"><b>ACADEMY</b><small>Drills with medals, eight missions, your Pilot Skill</small><i class="ph ph-arrow-right"></i></button>
+          <button class="cmd" data-go="hangar"><b>WORKSHOP</b><small>Build a drone from parts or pick one from the hangar</small><i class="ph ph-arrow-right"></i></button>
           <button class="cmd" data-go="squad"><b>SQUAD</b><small>Fly, race and build with friends in one room</small><i class="ph ph-arrow-right"></i></button>
-          <button class="cmd" data-go="train"><b>TRAIN</b><small>Eight missions from first hover to turbine inspection</small><i class="ph ph-arrow-right"></i></button>
-          <button class="cmd" data-go="build"><b>BUILD</b><small>Place rings, gates and ramps, share the link</small><i class="ph ph-arrow-right"></i></button>
-          <button class="cmd" data-go="hangar"><b>HANGAR</b><small>Pick a drone or upload your own</small><i class="ph ph-arrow-right"></i></button>
           <button class="cmd" data-go="settings"><b>SETTINGS</b><small>Controller, RC transmitter, rates, world</small><i class="ph ph-arrow-right"></i></button>
         </div>
+        <div class="rail-pilot"></div>
         <div class="rail-foot"><span>Free for every pilot</span><a href="${REPO}" target="_blank" rel="noopener">Open source on GitHub</a><a href="https://droneshine.de" target="_blank" rel="noopener">droneshine.de</a></div>
       </nav>`);
     this.specLine = el(`<div class="spec-line"></div>`);
@@ -148,7 +150,7 @@ export class UI {
     });
 
     // sheets
-    for (const [id, title] of [['squad', 'Squad'], ['train', 'Train'], ['hangar', 'Hangar'], ['settings', 'Settings'], ['editor', 'Upload a drone']]) {
+    for (const [id, title] of [['squad', 'Squad'], ['train', 'Missions'], ['hangar', 'Workshop'], ['settings', 'Settings'], ['editor', 'Upload a drone']]) {
       const s = el(`<section class="sheet live" data-sheet="${id}" aria-label="${title}" inert><header><button class="back" aria-label="Back"><i class="ph ph-arrow-left"></i></button><h2>${title}</h2><div class="grow"></div></header><div class="body"></div></section>`);
       $('.back', s).addEventListener('click', () => { audio.tick(); id === 'editor' ? this.leaveEditor() : this.closeSheets(); });
       this.root.append(s); this.sheets[id] = s;
@@ -271,6 +273,13 @@ export class UI {
 
   private sheetRenderers: Record<string, (body: HTMLElement) => void> = {};
 
+  /** Workshop hooks (src/workshop): the parts builder entry on top of the hangar, a badge per drone,
+   *  and the parts editor for drones built from parts (return true when it took over) */
+  hangarHooks: {
+    top?(body: HTMLElement): void; badge?(d: DroneSpec): string; edit?(d: DroneSpec): boolean;
+    actions?(d: DroneSpec, add: (icon: string, label: string, fn: () => void) => void): void;
+  } = {};
+
   /** Modes add their own panel (Royale, Academy, Workshop) without editing the rail code. */
   registerSheet(id: string, title: string, render: (body: HTMLElement) => void) {
     this.sheetRenderers[id] = render;
@@ -332,7 +341,8 @@ export class UI {
     if ((st === 'fly' || st === 'mission' || st === 'build') && coarse() && this.g.input.device === 'keyboard') this.g.input.device = 'touch';
     this.syncJoystick();
     this.crashEl.classList.remove('on');
-    this.resultEl.classList.toggle('open', st === 'result');
+    // drills (src/academy) show their own results screen and leave g.result empty
+    this.resultEl.classList.toggle('open', st === 'result' && !!this.g.result);
     this.pauseEl.classList.toggle('open', this.g.paused);
     if (st === 'result') this.renderResult();
     if (st === 'build') { ($('.map-name', this.build) as HTMLInputElement).value = this.g.builder.map.name; this.syncBuildBar(); }
@@ -361,8 +371,8 @@ export class UI {
   }
 
   // ================================================================ train
-  renderTrain() {
-    const body = $('.body', this.sheets.train);
+  /** the mission logbook; the Academy (src/academy) renders it into its own MISSIONS tab */
+  renderTrain(body: HTMLElement = $('.body', this.sheets.train)) {
     const p = progress();
     const total = Object.values(p.stars).reduce((a, b) => a + b, 0);
     body.innerHTML = `<p class="note">Each mission trains one real skill. Solar Shift, Facade Pro and Hotspot Hunt are the jobs DroneShine pilots fly every week. ${total} of ${this.g.missions.length * 3} stars earned.</p>`;
@@ -400,7 +410,7 @@ export class UI {
       const dv = derive(d);
       const r = el(`
         <div class="drone-row ${d.id === cur ? 'sel' : ''}">
-          <button class="pick" aria-pressed="${d.id === cur}"><h3><span>${esc(d.name)}</span> <small>${esc(d.author)}</small></h3><p>${esc(d.tagline)}</p>
+          <button class="pick" aria-pressed="${d.id === cur}"><h3><span>${esc(d.name)}</span> <small>${esc(d.author)}</small>${kind === 'custom' && this.hangarHooks.badge ? this.hangarHooks.badge(d) : ''}</h3><p>${esc(d.tagline)}</p>
           <p class="num stats">${fmtMass(dv.weight)} &nbsp; ${dv.motors} motors &nbsp; T/W ${dv.tw.toFixed(1)} &nbsp; ${dv.hoverMin.toFixed(0)} min</p></button>
           <div class="acts"></div>
         </div>`);
@@ -413,7 +423,8 @@ export class UI {
       const acts = $('.acts', r);
       const act = (icon: string, label: string, fn: () => void) => { const b = el(`<button class="icon-btn" aria-label="${label}" title="${label}"><i class="ph ${icon}"></i></button>`); b.addEventListener('click', fn); acts.append(b); };
       if (kind === 'custom') {
-        act('ph-pencil-simple', 'Edit', () => this.openEditor(d));
+        act('ph-pencil-simple', 'Edit', () => { if (!this.hangarHooks.edit?.(d)) this.openEditor(d); });
+        this.hangarHooks.actions?.(d, act);
         act('ph-download-simple', 'Export', () => downloadFile(`${d.id}.droneon.json`, JSON.stringify(d, null, 2)));
         act('ph-trash', 'Delete', async () => {
           if (!confirm(`Delete ${d.name}?`)) return;
@@ -434,6 +445,7 @@ export class UI {
     };
     body.innerHTML = '';
     body.append(el(`<p class="note">Selecting a drone puts it on the pad behind this panel. DSolar, DShine and DScan fly with the real masses and tools of our machines.</p>`));
+    this.hangarHooks.top?.(body);
     body.append(el(`<h3 class="group-h">Featured</h3>`));
     for (const d of FEATURED) body.append(row(d, 'featured'));
     body.append(el(`<h3 class="group-h">Your drones</h3>`));
@@ -776,7 +788,7 @@ export class UI {
       this.resultEl.classList.remove('open');
       if (b.dataset.r === 'retry') g.restartMission();
       if (b.dataset.r === 'next') g.startMission(g.missions[idx + 1]);
-      if (b.dataset.r === 'menu') g.enterMenu().then(() => this.openSheet('train'));
+      if (b.dataset.r === 'menu') g.enterMenu().then(() => this.openSheet(this.sheets.academy ? 'academy' : 'train'));
     };
   }
 

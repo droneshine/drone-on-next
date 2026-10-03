@@ -1,0 +1,54 @@
+/* Workshop parts builder (src/workshop). Extends the sheet language of src/ui/style.css: hairlines, Audiowide numbers. */
+.ws-stats { position: sticky; top: -4px; z-index: 1; background: #001c12; margin: 0 0 4px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 22px; padding: 16px 0 14px; }
+.ws-stats .fact { text-align: left; min-width: 0; }
+.ws-stats .fact b { font-size: 24px; overflow-wrap: anywhere; }
+.ws-stats .fact.like b { color: var(--lg); }
+.ws-msg { display: grid; gap: 4px; margin: 2px 0 10px; }
+.ws-msg p { color: var(--warn); font-weight: 600; font-size: 13px; letter-spacing: 0.03em; line-height: 1.45; }
+.ws-opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 1fr)); gap: 8px; }
+.ws-opts.props { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
+.ws-opt { text-align: left; display: grid; gap: 4px; align-content: start; min-height: 60px; padding: 11px 12px; border: 1px solid var(--faint); border-radius: var(--r); transition: border-color 160ms ease, background-color 160ms ease, transform 140ms var(--ease-out); }
+.ws-opt b { font-family: var(--display); font-weight: 400; font-size: 16px; letter-spacing: 0.02em; }
+.ws-opt span { font-size: 11px; color: var(--dim); letter-spacing: 0.04em; font-weight: 600; line-height: 1.35; }
+.ws-opt em { font-style: normal; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: var(--off); display: flex; gap: 5px; align-items: center; }
+.ws-opt.on { border-color: var(--lg); background: rgba(181, 247, 138, 0.08); }
+.ws-opt.on b { color: var(--lg); }
+.ws-opt.locked { cursor: not-allowed; border-style: dashed; }
+.ws-opt.locked b, .ws-opt.locked span { opacity: 0.45; }
+.ws-opt:not(.locked):active { transform: scale(0.98); }
+@media (hover: hover) and (pointer: fine) { .ws-opt:not(.locked):not(.on):hover { border-color: rgba(247, 247, 242, 0.38); } }
+.ws-help { margin-top: 8px; font-size: 12.5px; color: var(--dim); line-height: 1.5; max-width: 62ch; }
+.ws-paints { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; margin-top: 14px; }
+.ws-paint { display: grid; justify-items: center; align-content: start; gap: 6px; padding: 8px 4px; border-radius: var(--r); font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; color: var(--dim); text-align: center; }
+.ws-paint i { width: 38px; height: 38px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(247, 247, 242, 0.28); transition: transform 140ms var(--ease-out), box-shadow 160ms ease; }
+.ws-paint.on i { box-shadow: 0 0 0 2px #001c12, 0 0 0 4px var(--lg); }
+.ws-paint.on span { color: var(--off); }
+.ws-paint.locked { cursor: not-allowed; }
+.ws-paint.locked i { opacity: 0.28; }
+.ws-paint em { font-style: normal; font-size: 10px; letter-spacing: 0.06em; color: var(--dim); }
+.ws-paint:not(.locked):active i { transform: scale(0.94); }
+.ws-acts { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 28px; }
+.ws-acts .btn[disabled] { opacity: 0.4; }
+.ws-entry { width: 100%; text-align: left; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 16px; padding: 16px 0; margin-top: 16px; border-top: 1px solid var(--hair); border-bottom: 1px solid var(--hair); }
+.ws-entry b { font-family: var(--display); font-weight: 400; font-size: 26px; color: var(--lg); letter-spacing: 0.02em; }
+.ws-entry small { grid-column: 1; color: var(--dim); font-size: 13.5px; }
+.ws-entry i { grid-row: 1 / span 2; grid-column: 2; font-size: 22px; color: var(--lg); transition: transform 200ms var(--ease-out); }
+.ws-entry:active { transform: scale(0.99); }
+@media (hover: hover) and (pointer: fine) { .ws-entry:hover i { transform: translateX(4px); } }
+.ws-badge { font-style: normal; font-family: var(--text); font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--faint); color: var(--dim); align-self: center; }
+.ws-badge.expert { border-color: rgba(255, 178, 89, 0.55); color: var(--warn); }
+.ws-paints + .ws-acts { margin-top: 26px; }
+[data-sheet=workshop] .toggle .help { font-size: 12.5px; }
+@media (max-width: 760px) {
+  .ws-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; padding: 12px 0 10px; }
+  .ws-stats .fact b { font-size: 19px; }
+  .ws-opts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ws-opts.props { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .ws-opts.props .ws-opt span { display: none; }
+  .ws-opt { padding: 9px 10px; min-height: 0; }
+  .ws-paints { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-height: 520px) {
+  .ws-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 8px 0; gap: 6px 14px; }
+  .ws-stats .fact b { font-size: 17px; }
+}
