@@ -40,5 +40,7 @@ export default defineConfig({
   base: process.env.BASE ?? '/',
   build: { target: 'es2022', chunkSizeWarningLimit: 1500, assetsInlineLimit: 0 },
   server: { port: 5190 },
+  // worktrees share one node_modules through a junction: keep its path inside the project so the dev server may serve fonts from it
+  resolve: { preserveSymlinks: true },
   plugins: [precache()],
 });
