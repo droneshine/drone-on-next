@@ -24,8 +24,8 @@ export function installXR(game: Game, ui: UI) {
 
   const el = (html: string) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild as HTMLButtonElement; };
   const cmd = el(`<button class="cmd" data-xr="enter" hidden><b>ENTER VR</b><small>Stand on the field and fly it in your headset</small><i class="ph ph-virtual-reality"></i></button>`);
-  // right under FLY: on a headset this is the way to play
-  const fly = ui.rail.querySelector('[data-go=fly]');
+  // right under the free flight command (SPIELWIESE since the rail restructure): on a headset this is the way to play
+  const fly = ui.rail.querySelector('[data-go=spielwiese]') ?? ui.rail.querySelector('[data-go=fly]');
   if (fly) fly.after(cmd); else (ui.rail.querySelector('.cmds') ?? ui.rail).append(cmd);
   const pauseBtn = el(`<button data-xr="enter" hidden>Enter VR <i class="ph ph-virtual-reality"></i></button>`);
   const list = ui.pauseEl.querySelector('.list') ?? ui.pauseEl;
