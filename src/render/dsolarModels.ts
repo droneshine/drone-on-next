@@ -10,13 +10,13 @@ import { DroneVisual, mats, cyl, bx, tube, addProps, ledPair, sparkleMesh } from
 // DSolar Max (MT100)  wheelbase 2300, frame 1800 x 1800, props 1420 (3055 span), arm plane 888,
 //                     total 950, gear 862 front and 941 side, lowest point 325 above ground.
 
-function smoothTube(points: THREE.Vector3[], r: number, m: THREE.Material, seg = 48) {
+export function smoothTube(points: THREE.Vector3[], r: number, m: THREE.Material, seg = 48) {
   const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
   return new THREE.Mesh(new THREE.TubeGeometry(curve, seg, r, 10, false), m);
 }
 
 /** Folding arm with clamp joints, ESC pod under the motor and a spray nozzle. */
-function arm(v: DroneVisual, from: THREE.Vector3, to: THREE.Vector3, r: number, motorR: number, motorH: number, escLen: number) {
+export function arm(v: DroneVisual, from: THREE.Vector3, to: THREE.Vector3, r: number, motorR: number, motorH: number, escLen: number) {
   const carbon = mats.carbon(), black = mats.black(), alu = new THREE.MeshStandardMaterial({ color: '#8d9296', metalness: 0.85, roughness: 0.35 });
   v.root.add(tube(from, to, r, carbon));
   const dir = to.clone().sub(from).normalize();
@@ -44,7 +44,7 @@ function arm(v: DroneVisual, from: THREE.Vector3, to: THREE.Vector3, r: number, 
   v.nozzles.push({ pos: new THREE.Vector3(to.x, to.y - r - 0.14, to.z), dir: new THREE.Vector3(0, -1, 0) });
 }
 
-function canopy(v: DroneVisual, w: number, l: number, h: number, y: number) {
+export function canopy(v: DroneVisual, w: number, l: number, h: number, y: number) {
   // stepped, faceted shell like the real cover: base tray, main body, raised spine, two filler caps
   const green = mats.plastic('#1f5e2c', 0.3);
   const g = new THREE.Group();
@@ -63,7 +63,7 @@ function canopy(v: DroneVisual, w: number, l: number, h: number, y: number) {
   const sp = sparkleMesh(Math.min(w, h) * 0.55, '#f7f7f2'); sp.position.set(0, y + h * 0.45, -l * 0.5 - h * 0.08); sp.rotation.x = -0.35; v.root.add(sp);
 }
 
-function tank(v: DroneVisual, w: number, d: number, h: number, top: number) {
+export function tank(v: DroneVisual, w: number, d: number, h: number, top: number) {
   // rounded rectangular PE tank, translucent white with a visible fill line
   const geo = new THREE.BoxGeometry(w, h, d, 6, 6, 6);
   const p = geo.attributes.position as THREE.BufferAttribute;
