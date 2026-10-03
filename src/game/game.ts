@@ -192,6 +192,7 @@ export class Game {
     this.input.throttleSprings = this.sim.mode === 'gps';
     if (spec.hose) {
       this.hose = new Hose(this.world.facade.pumpAnchor.clone(), 50);
+      this.hose.maxForce = spec.mass * 9.81 * 1.5;
       this.world.scene.add(this.hose.mesh);
     }
     this.gimbalPitch = spec.tool === 'lance' ? -5 : spec.tool === 'thermal' ? -35 : -15;
@@ -201,6 +202,23 @@ export class Game {
     this.resetDrone();
     setLS('lastDrone', spec.id);
     this.mp?.announce();
+  }
+
+  private portablePump: THREE.Group | null = null;
+  private setPortablePump(at: THREE.Vector3 | null) {
+    if (!at) { if (this.portablePump) this.portablePump.visible = false; return; }
+    if (!this.portablePump) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.7, 1.2), new THREE.MeshStandardMaterial({ color: '#0f4a2b', roughness: 0.5 }));
+      body.position.y = 0.35; g.add(body);
+      const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.5, 20), new THREE.MeshStandardMaterial({ color: '#e6e3d8', roughness: 0.5 }));
+      drum.rotation.z = Math.PI / 2; drum.position.set(0, 0.85, 0.2); g.add(drum);
+      g.traverse(o => { (o as THREE.Mesh).castShadow = true; });
+      g.userData.temp = 0.7;
+      this.world.scene.add(g); this.portablePump = g;
+    }
+    this.portablePump.visible = true;
+    this.portablePump.position.set(at.x, at.y - 0.9, at.z);
   }
 
   setHome(pos: THREE.Vector3, yaw: number) { this.home.copy(pos); this.homeYaw = yaw; }
@@ -215,7 +233,21 @@ export class Game {
     for (const d of this.debris) this.world.scene.remove(d.m);
     this.debris = [];
     this.visual.root.visible = true;
-    if (this.hose) this.hose.reset(this.attachPoint());
+    if (this.hose) {
+      // the hose runs from the facade pump when DShine starts there, otherwise a mobile
+      // pump stands next to the take off spot, like the trailer on a real job
+      const fixed = this.world.facade.pumpAnchor;
+      const nearFacade = Math.hypot(this.home.x - fixed.x, this.home.z - fixed.z) < this.hose.length * 0.8;
+      if (nearFacade) { this.hose.anchor.copy(fixed); this.setPortablePump(null); }
+      else {
+        const off = new THREE.Vector3(-3.2, 0, 2.4).applyAxisAngle(new THREE.Vector3(0, 1, 0), this.homeYaw);
+        const a = this.home.clone().add(off);
+        a.y = heightAt(a.x, a.z) + 0.9;
+        this.hose.anchor.copy(a);
+        this.setPortablePump(a);
+      }
+      this.hose.reset(this.attachPoint());
+    } else this.setPortablePump(null);
     if (this.spec.hose) {
       // DShine lives next to the pump
       this.losPilot.copy(this.world.facade.pumpAnchor).add(new THREE.Vector3(-6, -0.5, 4));

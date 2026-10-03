@@ -85,6 +85,7 @@ export class Hose {
   mesh: THREE.Mesh;
   private seg: number;
   force = new THREE.Vector3();
+  maxForce = 300;
 
   constructor(public anchor: THREE.Vector3, length = 50) {
     this.length = length;
@@ -149,6 +150,8 @@ export class Hose {
     } else {
       this.force.addScaledVector(toPrev.normalize(), kgPerM * 9.81 * hanging * 0.25);
     }
+    // a hose can drag the drone down and back, it can never fling it: cap at about 1.5 g of a DShine
+    if (this.force.length() > this.maxForce) this.force.setLength(this.maxForce);
     this.rebuild();
   }
 
