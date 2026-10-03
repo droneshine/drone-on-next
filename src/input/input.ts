@@ -39,6 +39,7 @@ export class Input {
   private kb = { yaw: 0, pitch: 0, roll: 0, climb: 0 };
   gamepadName = '';
   private padButtonsPrev: boolean[] = [];
+  private padAxesPrev: number[] = [];
   padPressed = new Set<number>();
   touch = { left: { x: 0, y: 0, active: false }, right: { x: 0, y: 0, active: false } };
   mouseDX = 0; mouseDY = 0; wheel = 0;
@@ -65,7 +66,7 @@ export class Input {
     addEventListener('mousedown', e => this.mouseButtons.add(e.button));
     addEventListener('mouseup', e => this.mouseButtons.delete(e.button));
     addEventListener('wheel', e => { this.wheel += Math.sign(e.deltaY); }, { passive: true });
-    addEventListener('gamepadconnected', e => { this.gamepadName = (e as GamepadEvent).gamepad.id; this.device = this.looksLikeRC((e as GamepadEvent).gamepad) ? 'rc' : 'gamepad'; });
+    addEventListener('gamepadconnected', e => { this.gamepadName = (e as GamepadEvent).gamepad.id; });
   }
 
   save() { try { localStorage.setItem(LS, JSON.stringify(this.settings)); } catch { /* ignore */ } }
@@ -98,9 +99,13 @@ export class Input {
         if (b.pressed && !this.padButtonsPrev[i]) this.padPressed.add(i);
         this.padButtonsPrev[i] = b.pressed;
       });
-      const moved = pad.axes.some(a => Math.abs(a) > 0.3) || pad.buttons.some(b => b.pressed);
-      if (moved && this.device === 'keyboard') this.device = this.looksLikeRC(pad) ? 'rc' : 'gamepad';
-      if (moved && this.device === 'touch') this.device = this.looksLikeRC(pad) ? 'rc' : 'gamepad';
+      // take over only on real movement: a throttle stick resting at the bottom, or an
+      // uncalibrated axis, must not steal control from touch or keyboard every frame
+      const prev = this.padAxesPrev;
+      const moved = (prev.length === pad.axes.length && pad.axes.some((a, i) => Math.abs(a - prev[i]) > 0.12)) || this.padPressed.size > 0;
+      this.padAxesPrev = [...pad.axes];
+      const screenSticks = this.touch.left.active || this.touch.right.active;
+      if (moved && !screenSticks && (this.device === 'keyboard' || this.device === 'touch')) this.device = this.looksLikeRC(pad) ? 'rc' : 'gamepad';
       this.gamepadName = pad.id;
     }
     if (!this.enabled) return;
